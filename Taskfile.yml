@@ -12,29 +12,13 @@ tasks:
     desc: Build the KRS binary
     cmds:
       - task: odin
-        vars: {ACTION: build, PACKAGE: cmd/krs, BINARY: krs}
+        vars: {ACTION: build, PACKAGE: cmd/krs, BINARY: krs, QUIET: '{{.QUIET}}'}
 
   install:
     desc: Build KRS and install it in ~/.local/bin or KRS_INSTALL_DIR
     silent: true
     cmds:
-      - task: build
-      - |
-        set -eu
-        out="${KRS_CHECK_DIR:-${TMPDIR:-/tmp}/krs-check}"
-        bin_dir="${KRS_INSTALL_DIR:-$HOME/.local/bin}"
-        destination="$bin_dir/krs"
-        if [ -d "$destination" ]; then
-          printf 'krs: cannot replace directory %s\n' "$destination" >&2
-          exit 1
-        fi
-
-        mkdir -p "$bin_dir"
-        staged=$(mktemp "$bin_dir/.krs.XXXXXX")
-        trap 'rm -f "$staged"' EXIT
-        install -m 755 "$out/krs" "$staged"
-        mv -f "$staged" "$destination"
-        printf 'krs: installed %s\n' "$destination"
+      - sh tools/install.sh
 
   test:
     desc: Run the KRS test suite

@@ -69,18 +69,9 @@ Env :: struct {
 	err:          io.Writer,
 	input:        io.Reader,
 	interactive:  bool, // a person can be asked
+	style:        Output_Style,
+	progress:     ^Progress,
 	download_tags: proc(env: ^Env, repo: ^Git_Repository, directory, origin: string) -> bool,
-}
-
-say :: proc(env: ^Env, format: string, arguments: ..any) {
-	fmt.wprintfln(env.out, format, ..arguments)
-}
-
-// Reports a failure and returns false, so a caller can `return fail(...)`.
-fail :: proc(env: ^Env, format: string, arguments: ..any) -> bool {
-	fmt.wprintf(env.err, "krs: ")
-	fmt.wprintfln(env.err, format, ..arguments)
-	return false
 }
 
 ask_line :: proc(env: ^Env) -> string {

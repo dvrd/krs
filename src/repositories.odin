@@ -86,7 +86,7 @@ cache_refresh :: proc(env: ^Env, target, origin: string) -> bool {
 	}
 
 	fetch_github_tags(env, repo, target, origin) or_return
-	say(env, "krs: fetched tags for %s", origin)
+	success(env, "fetched tags for %s", origin)
 	return true
 }
 
@@ -118,7 +118,7 @@ cache_github_repository :: proc(env: ^Env, repository: GitHub_Repository) -> boo
 		return fail(env, "cannot inspect repository store entry %s: %v", target, stat_err)
 	}
 
-	say(env, "krs: cached %s in %s", github_locator(repository), target)
+	success(env, "cached %s in %s", github_locator(repository), target)
 	return true
 }
 

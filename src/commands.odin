@@ -1,21 +1,22 @@
 package krs
 
 import "core:fmt"
+import "core:io"
 import "core:os"
 import "core:strings"
 
-USAGE :: `usage:
-  krs install [--root=<path>] [--frozen] [--yes]
-  krs update [<package>[@<tag>]] [--root=<path>] [--yes]
-  krs fetch <owner>/<repo>
-  krs link <package> [--root=<path>]
-  krs unlink <package> [--root=<path>] [--yes]
-  krs --version
-  krs --help
+USAGE_FORMAT :: `%[0]susage:%[1]s
+  krs %[0]sinstall%[1]s [--root=<path>] [--frozen] [--yes]
+  krs %[0]supdate%[1]s [<package>[@<tag>]] [--root=<path>] [--yes]
+  krs %[0]sfetch%[1]s <owner>/<repo>
+  krs %[0]slink%[1]s <package> [--root=<path>]
+  krs %[0]sunlink%[1]s <package> [--root=<path>] [--yes]
+  krs %[0]s--version%[1]s
+  krs %[0]s--help%[1]s
 
-  --root=<path>  work on the shared/ of the Odin root at <path>
-  --frozen       install exactly what .krs/packages.json says, or fail
-  --yes          do not ask before writing
+  %[0]s--root=<path>%[1]s  work on the shared/ of the Odin root at <path>
+  %[0]s--frozen%[1]s       install exactly what .krs/packages.json says, or fail
+  %[0]s--yes%[1]s          do not ask before writing
 `
 
 EXIT_OK :: 0
@@ -23,6 +24,14 @@ EXIT_FAILED :: 1
 EXIT_USAGE :: 2
 
 RELEASE_TAG :: #load("VERSION", string)
+
+print_usage :: proc(output: io.Writer, colored: bool) {
+	if colored {
+		fmt.wprintf(output, USAGE_FORMAT, ANSI_RED, ANSI_RESET)
+	} else {
+		fmt.wprintf(output, USAGE_FORMAT, "", "")
+	}
+}
 
 // Runs one krs command. `arguments` excludes the program name.
 run :: proc(env: ^Env, arguments: []string) -> int {
@@ -33,12 +42,16 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 			return EXIT_FAILED
 		}
 
-		say(env, "krs %s", tag)
+		if env.style.stdout && env.style.color {
+			say(env, "krs " + ANSI_RED + "%s" + ANSI_RESET, tag)
+		} else {
+			say(env, "krs %s", tag)
+		}
 		return EXIT_OK
 	}
 
 	if len(arguments) == 1 && arguments[0] == "--help" {
-		fmt.wprint(env.out, USAGE)
+		print_usage(env.out, env.style.stdout && env.style.color)
 		return EXIT_OK
 	}
 
@@ -62,7 +75,7 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 	}
 
 	if len(words) == 0 {
-		fmt.wprint(env.err, USAGE)
+		print_usage(env.err, env.style.stderr && env.style.color)
 		return EXIT_USAGE
 	}
 
@@ -81,7 +94,7 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 	case words[0] == "unlink" && len(words) == 2:
 		ok = command_unlink(env, options, words[1])
 	case:
-		fmt.wprint(env.err, USAGE)
+		print_usage(env.err, env.style.stderr && env.style.color)
 		return EXIT_USAGE
 	}
 
@@ -140,7 +153,7 @@ command_outdated :: proc(env: ^Env, options: Options) -> bool {
 	}
 
 	if found == 0 {
-		say(env, "krs: every package of this project is at its highest tag")
+		success(env, "every package of this project is at its highest tag")
 	}
 
 	return true
@@ -209,7 +222,7 @@ command_update :: proc(env: ^Env, options: Options, target: string) -> bool {
 
 	if tag == record.tag {
 		repository_tag_commit(env, repository.path, name, tag, record.commit) or_return
-		say(env, "krs: %s is already at %s", name, tag)
+		success(env, "%s is already at %s", name, tag)
 		return true
 	}
 
@@ -296,7 +309,7 @@ command_link :: proc(env: ^Env, options: Options, name: string) -> bool {
 	stage_manifest(&transaction, state.shared, &state.manifest) or_return
 	transaction_commit(&transaction) or_return
 
-	say(env, "krs: %s is linked to %s; every project on this Odin root now builds against it", name, source)
+	success(env, "%s is linked to %s; every project on this Odin root now builds against it", name, source)
 	return true
 }
 
@@ -362,6 +375,6 @@ command_unlink :: proc(env: ^Env, options: Options, name: string) -> bool {
 	stage_manifest(&transaction, state.shared, &state.manifest) or_return
 	transaction_commit(&transaction) or_return
 
-	say(env, "krs: %s is unlinked; no version of it was recorded, so nothing was installed", name)
+	success(env, "%s is unlinked; no version of it was recorded, so nothing was installed", name)
 	return true
 }

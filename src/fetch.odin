@@ -11,6 +11,9 @@ command_fetch :: proc(env: ^Env, target: string) -> bool {
 }
 
 fetch_github_tags :: proc(env: ^Env, repo: ^Git_Repository, directory, origin: string) -> bool {
+	progress_start(env, "Fetching GitHub tags")
+	defer progress_stop(env)
+
 	if env.download_tags != nil {
 		return env.download_tags(env, repo, directory, origin)
 	}

@@ -233,6 +233,9 @@ transaction_commit :: proc(transaction: ^Transaction) -> bool {
 	}
 
 	env := transaction.env
+	progress_start(env, "Applying changes")
+	defer progress_stop(env)
+
 	database := journal_open(env, true) or_return
 	defer db.close(database)
 	changes, id := transaction_prepare(transaction, database) or_return

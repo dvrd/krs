@@ -31,7 +31,14 @@ main :: proc() {
 
 	project, _ := os.get_working_directory(context.allocator)
 	home, _ := os.user_home_dir(context.allocator)
-
+	term := os.get_env("TERM", context.allocator)
+	no_color := os.get_env("NO_COLOR", context.allocator) != ""
+	no_animation := os.get_env("KRS_NO_ANIMATION", context.allocator) != ""
+	style := krs.Output_Style{
+		stdout = term != "dumb" && terminal.is_terminal(os.stdout),
+		stderr = term != "dumb" && terminal.is_terminal(os.stderr),
+		color  = !no_color,
+	}
 	env := krs.Env {
 		project      = project,
 		home         = home,
@@ -40,6 +47,13 @@ main :: proc() {
 		err          = os.to_writer(os.stderr),
 		input        = os.to_reader(os.stdin),
 		interactive  = terminal.is_terminal(os.stdin),
+		style        = style,
+	}
+
+	progress := krs.Progress{output = env.err}
+	width, _, measured := terminal.get_terminal_size()
+	if style.stdout && style.stderr && style.color && !no_animation && (!measured || width >= 24) {
+		env.progress = &progress
 	}
 
 	os.exit(krs.run(&env, os.args[1:]))

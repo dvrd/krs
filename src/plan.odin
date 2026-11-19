@@ -925,13 +925,15 @@ plan_apply :: proc(state: ^State, project_pins := Project_Pins.Record) -> bool {
 
 	transaction_commit(&transaction) or_return
 
-	say(state.env, "krs: %d installed, %d already in place", len(installs), len(state.order) - len(installs))
+	success(state.env, "%d installed, %d already in place", len(installs), len(state.order) - len(installs))
 	return true
 }
 
 // Queues one request for every `shared:` name the project imports.
 plan_discover :: proc(state: ^State) -> bool {
+	progress_start(state.env, "Scanning imports")
 	imports, ok := scan_directory_imports(state.env.project, path_base(state.env.project))
+	progress_stop(state.env)
 	if !ok {
 		return fail(state.env, "cannot read the Odin files under %s", state.env.project)
 	}
