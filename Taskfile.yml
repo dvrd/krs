@@ -19,6 +19,8 @@ tasks:
     cmds:
       - task: odin
         vars: {ACTION: test, PACKAGE: tests, BINARY: krs-tests}
+      - task: odin
+        vars: {ACTION: test, PACKAGE: tools/version, BINARY: krs-version-tests}
 
   version:
     desc: Print the release version
@@ -26,62 +28,25 @@ tasks:
     cmds:
       - cat src/VERSION
 
-  version:patch:
-    desc: Increment the patch version
+  version:next:
+    desc: Preview the next version from Conventional Commits
+    silent: true
     cmds:
-      - task: version:bump
-        vars: {PART: patch}
-
-  version:minor:
-    desc: Increment the minor version and reset the patch
-    cmds:
-      - task: version:bump
-        vars: {PART: minor}
-
-  version:major:
-    desc: Increment the major version and reset the minor and patch
-    cmds:
-      - task: version:bump
-        vars: {PART: major}
+      - task: version:tool
+      - sh tools/version/release.sh next
 
   release:
-    desc: Verify the committed release and create its annotated Git tag locally
-    vars:
-      RELEASE_COMMIT:
-        sh: git rev-parse --verify HEAD
-    preconditions:
-      - sh: status=$(git status --porcelain --untracked-files=all) && test -z "$status"
-        msg: Commit your changes before tagging a release
-    cmds:
-      - task: check
-      - task: version:tool
-      - |
-        set -e
-        commit=$(git rev-parse --verify HEAD)
-        status=$(git status --porcelain --untracked-files=all)
-        if [ "$commit" != "{{.RELEASE_COMMIT}}" ] || [ -n "$status" ]; then
-          echo 'krs: the checkout changed during release verification. Run task release again from a clean commit.' >&2
-          exit 1
-        fi
-        out="${KRS_CHECK_DIR:-${TMPDIR:-/tmp}/krs-check}"
-        tags=$(git tag --list)
-        tag=$("$out/krs-version" check src/VERSION "$tags")
-        git tag -a "$tag" -m "KRS $tag" "$commit"
-        printf 'krs: tagged %s\n' "$tag"
-
-  version:bump:
-    internal: true
+    desc: Build, test, commit, and tag the next release from Conventional Commits
+    silent: true
     cmds:
       - task: version:tool
-      - |
-        out="${KRS_CHECK_DIR:-${TMPDIR:-/tmp}/krs-check}"
-        "$out/krs-version" '{{.PART}}' src/VERSION
+      - sh tools/version/release.sh release
 
   version:tool:
     internal: true
     cmds:
       - task: odin
-        vars: {ACTION: build, PACKAGE: tools/version, BINARY: krs-version}
+        vars: {ACTION: build, PACKAGE: tools/version, BINARY: krs-version, QUIET: 'true'}
 
   odin:
     internal: true
@@ -97,4 +62,6 @@ tasks:
         mkdir -p "$out"
         odin {{.ACTION}} {{.PACKAGE}} -out:"$out/{{.BINARY}}" -vet -o:none \
           "-extra-linker-flags:-L\"$git_libdir\""
-        printf 'krs: %s complete (%s/%s)\n' '{{.ACTION}}' "$out" '{{.BINARY}}'
+        if [ '{{.QUIET}}' != true ]; then
+          printf 'krs: %s complete (%s/%s)\n' '{{.ACTION}}' "$out" '{{.BINARY}}'
+        fi

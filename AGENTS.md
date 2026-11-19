@@ -64,15 +64,19 @@ finishes cleaning up a settled one before reading the package records.
 `task version` reads it from the checkout. `krs --version` reports the
 version embedded when the binary was built.
 
-1. Run `task version:patch`, `task version:minor`, or `task version:major`.
-   For `v0.x`, use a patch for compatible changes and a minor for breaking
-   changes. Starting at `v1.0.0`, use a patch for compatible fixes, a minor for
-   compatible features, and a major for breaking changes.
-2. Commit `src/VERSION` with the changes included in the release.
-3. Run `task release` from a clean checkout. It builds KRS, runs the tests,
-   and creates a local annotated tag for that commit when its version is
-   higher than all existing release tags. Keep published tags at their
-   original commits.
+Use [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
+`fix:` bumps the patch. `feat:` bumps the minor from `v1.0.0` onward and the
+patch on `v0.x`. A `!` after the type or scope, or a `BREAKING CHANGE:` or
+`BREAKING-CHANGE:` footer, bumps the major from `v1.0.0` onward and the minor
+on `v0.x`. Other commit types only trigger a bump if marked as breaking.
+
+1. Run `task version:next` to see the version selected from the highest-impact
+   commit since the latest release tag. Fetch release tags and history if your
+   checkout is missing them.
+2. Run `task release` from a clean branch that contains the latest release.
+   It updates `src/VERSION`, builds and tests KRS, commits the version file as
+   `chore(release): vMAJOR.MINOR.PATCH`, and creates a local annotated tag.
+   If tagging fails after the commit, rerun `task release` from that commit.
 
 When changing command behavior, check the CLI usage in
 [`src/commands.odin`](src/commands.odin) and the package resolution tests in
