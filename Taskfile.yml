@@ -1,0 +1,100 @@
+version: '3'
+
+tasks:
+  default:
+    desc: Build KRS and run its tests
+    aliases: [check]
+    cmds:
+      - task: build
+      - task: test
+
+  build:
+    desc: Build the KRS binary
+    cmds:
+      - task: odin
+        vars: {ACTION: build, PACKAGE: cmd/krs, BINARY: krs}
+
+  test:
+    desc: Run the KRS test suite
+    cmds:
+      - task: odin
+        vars: {ACTION: test, PACKAGE: tests, BINARY: krs-tests}
+
+  version:
+    desc: Print the release version
+    silent: true
+    cmds:
+      - cat src/VERSION
+
+  version:patch:
+    desc: Increment the patch version
+    cmds:
+      - task: version:bump
+        vars: {PART: patch}
+
+  version:minor:
+    desc: Increment the minor version and reset the patch
+    cmds:
+      - task: version:bump
+        vars: {PART: minor}
+
+  version:major:
+    desc: Increment the major version and reset the minor and patch
+    cmds:
+      - task: version:bump
+        vars: {PART: major}
+
+  release:
+    desc: Verify the committed release and create its annotated Git tag locally
+    vars:
+      RELEASE_COMMIT:
+        sh: git rev-parse --verify HEAD
+    preconditions:
+      - sh: status=$(git status --porcelain --untracked-files=all) && test -z "$status"
+        msg: Commit your changes before tagging a release
+    cmds:
+      - task: check
+      - task: version:tool
+      - |
+        set -e
+        commit=$(git rev-parse --verify HEAD)
+        status=$(git status --porcelain --untracked-files=all)
+        if [ "$commit" != "{{.RELEASE_COMMIT}}" ] || [ -n "$status" ]; then
+          echo 'krs: the checkout changed during release verification. Run task release again from a clean commit.' >&2
+          exit 1
+        fi
+        out="${KRS_CHECK_DIR:-${TMPDIR:-/tmp}/krs-check}"
+        tags=$(git tag --list)
+        tag=$("$out/krs-version" check src/VERSION "$tags")
+        git tag -a "$tag" -m "KRS $tag" "$commit"
+        printf 'krs: tagged %s\n' "$tag"
+
+  version:bump:
+    internal: true
+    cmds:
+      - task: version:tool
+      - |
+        out="${KRS_CHECK_DIR:-${TMPDIR:-/tmp}/krs-check}"
+        "$out/krs-version" '{{.PART}}' src/VERSION
+
+  version:tool:
+    internal: true
+    cmds:
+      - task: odin
+        vars: {ACTION: build, PACKAGE: tools/version, BINARY: krs-version}
+
+  odin:
+    internal: true
+    silent: true
+    preconditions:
+      - sh: pkg-config --exists libgit2
+        msg: Install libgit2 and make it available to pkg-config
+    cmds:
+      - |
+        set -e
+        out="${KRS_CHECK_DIR:-${TMPDIR:-/tmp}/krs-check}"
+        git_libdir=$(pkg-config --variable=libdir libgit2)
+        mkdir -p "$out"
+        odin {{.ACTION}} {{.PACKAGE}} -out:"$out/{{.BINARY}}" -vet -o:none \
+          "-extra-linker-flags:-L\"$git_libdir\""
+        printf 'krs: %s complete (%s/%s)\n' '{{.ACTION}}' "$out" '{{.BINARY}}'
