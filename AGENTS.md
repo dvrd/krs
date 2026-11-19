@@ -7,7 +7,7 @@ Before editing code, read the [TigerStyle guide](TYGER_STYLE.md) and apply its
 principles to Odin. Leave a blank line between consecutive `if` statements.
 Keep Git operations in-process through libgit2.
 
-## Build and test
+## Build, test, and install
 
 Install Task, Odin, libgit2, SQLite, and pkg-config. The Odin compiler used for
 the build needs `shared:kakunou` in its shared collection. The tests also use
@@ -16,9 +16,14 @@ the Git CLI to create fixture repositories.
 - `task` or `task check` builds KRS and runs the suite.
 - `task build` builds the CLI and prints its path.
 - `task test` runs the suite on its own.
+- `task install` builds the CLI and installs it as `~/.local/bin/krs`.
 
 Set `KRS_CHECK_DIR` to choose the output directory. The default is
 `${TMPDIR:-/tmp}/krs-check`.
+
+Set `KRS_INSTALL_DIR` to override the installation directory, for example
+`KRS_INSTALL_DIR=/usr/local/bin task install`. Add the installation directory
+to your `PATH` to run `krs` from any project.
 
 ## Run KRS
 
