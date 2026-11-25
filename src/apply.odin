@@ -55,6 +55,7 @@ plan_packages :: proc(state: ^State) -> Packages_File {
 
 		switch decision.action {
 		case .Keep, .Install:
+			existing := packages_find(&state.packages, name)
 			append(
 				&file.packages,
 				Package_Record {
@@ -63,6 +64,7 @@ plan_packages :: proc(state: ^State) -> Packages_File {
 					tag = decision.tag,
 					commit = decision.commit,
 					hash = decision.hash,
+					pinned = (existing != nil && existing.pinned) || state.pin_names[name],
 				},
 			)
 		case .Linked, .Unmanaged:
@@ -127,7 +129,7 @@ decision_stage :: proc(state: ^State, transaction: ^Transaction, decision: ^Deci
 			tag = decision.tag,
 			commit = decision.commit,
 			hash = decision.hash,
-			path = decision.repository,
+			path = "" if state.vendored else decision.repository,
 		},
 	)
 
@@ -201,6 +203,30 @@ Project_Pins :: enum {
 	Preserve,
 }
 
+// Records the decided versions in .krs/packages.json without installing
+// them; `krs install` installs them later.
+plan_record_only :: proc(state: ^State) -> bool {
+	for name in state.order {
+		decision := state.decisions[name]
+		if decision.action == .Install {
+			decision_prepare(state, decision) or_return
+		}
+	}
+
+	packages := plan_packages(state)
+	if packages_equal(&packages, &state.packages) {
+		success(state.env, "%s is already up to date", PACKAGES_PATH)
+		return true
+	}
+
+	transaction := Transaction{env = state.env, scope = state.scope}
+	defer transaction_close(&transaction)
+	stage_packages(&transaction, path_join(state.scope.project, PACKAGES_PATH), packages) or_return
+	transaction_commit(&transaction) or_return
+	success(state.env, "%s records the new versions; run %s to install them", PACKAGES_PATH, "krs install")
+	return true
+}
+
 // Carries out the decisions: confirm, write `shared/`, then the records.
 plan_apply :: proc(state: ^State, project_pins := Project_Pins.Record) -> bool {
 	installs: [dynamic]^Decision
@@ -253,7 +279,7 @@ plan_apply :: proc(state: ^State, project_pins := Project_Pins.Record) -> bool {
 	}
 
 	if project_pins == .Record && !packages_equal(&packages, &state.packages) {
-		stage_json(&transaction, path_join(state.scope.project, PACKAGES_PATH), packages) or_return
+		stage_packages(&transaction, path_join(state.scope.project, PACKAGES_PATH), packages) or_return
 	}
 
 	transaction_commit(&transaction) or_return

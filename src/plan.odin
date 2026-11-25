@@ -10,7 +10,7 @@ Options :: struct {
 	restore: bool, // `unlink` installs the recorded release in place of the link
 	repair:  bool, // `install` reinstalls packages whose files no longer match
 	fetch:   bool, // `update` refreshes GitHub caches before checking
-	all:     bool, // `update` moves every package to its highest compatible tag
+	update:  Update_Options, // the flags only `update` takes
 }
 
 // How often a command touched Git or the disk; tests assert the caches work.
@@ -26,6 +26,7 @@ State :: struct {
 	env:       ^Env,
 	options:   Options,
 	shared:    string,
+	vendored:  bool, // shared is <project>/vendor
 	config:    Config,
 	packages:  Packages_File,
 	manifest:  Manifest_File,
@@ -39,6 +40,7 @@ State :: struct {
 	fetch_configured: bool,
 	version_answers:  map[Version_Conflict]string,
 	version_question: Version_Conflict,
+	pin_names:        map[string]bool, // pinned by this run's --pin
 	// Per-command caches, kept across resolution passes; never persisted.
 	repositories:     map[string]Repository_Lookup, // key: path + (cached ? "\x00cached" : "")
 	tag_commits:      map[[2]string]string, // {path, tag} -> commit
@@ -91,9 +93,27 @@ state_open :: proc(env: ^Env, options: Options) -> (state: ^State, ok: bool) {
 	journal_recover(env, state.scope) or_return
 	state.config = load_config(env) or_return
 	state.packages = load_packages(env) or_return
+
+	// A project with its own collection reads and writes vendor/, not the root.
+	vendor := path_join(state.scope.project, VENDOR_DIR)
+	if os.exists(path_join(vendor, MANIFEST_PATH)) {
+		state.shared = vendor
+		state.vendored = true
+	}
+
 	state.manifest = load_manifest(env, state.shared) or_return
 
 	return state, true
+}
+
+// Forgets everything a previous plan decided, so another plan can run on
+// the same state (for example after switching to vendor/).
+plan_reset :: proc(state: ^State) {
+	clear(&state.queue)
+	clear(&state.decisions)
+	clear(&state.order)
+	clear(&state.altered)
+	clear(&state.installed_hashes)
 }
 
 // Prints a message once per command, however often it comes up.
@@ -112,7 +132,7 @@ report_once :: proc(state: ^State, format: string, arguments: ..any) {
 // Queues one request for every `shared:` name the project imports.
 plan_discover :: proc(state: ^State) -> bool {
 	progress_start(state.env, "Scanning imports")
-	imports, ok := scan_directory_imports(state.env.project, path_base(state.env.project))
+	imports, ok := scan_directory_imports(state.env.project, path_base(state.env.project), true)
 	progress_stop(state.env)
 	if !ok {
 		return fail(state.env, "cannot read the Odin files under %s", state.env.project)

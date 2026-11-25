@@ -12,6 +12,7 @@ KRS_DATA_PATH :: ".local/shared/krs"
 
 PACKAGES_PATH :: ".krs/packages.json"
 MANIFEST_PATH :: ".krs/manifest.json"
+VENDOR_DIR :: "vendor"
 CONFIG_PATH :: ".config/krs/config.json"
 
 // One dependency of a project, as written to `.krs/packages.json`. No path of
@@ -22,6 +23,7 @@ Package_Record :: struct {
 	tag:    string,
 	commit: string,
 	hash:   string,
+	pinned: bool `json:"pinned,omitempty"`, // held at tag: never upgraded, never moved by a dependency
 }
 
 Packages_File :: struct {
@@ -69,23 +71,35 @@ Env :: struct {
 	input:        io.Reader,
 	interactive:  bool, // a person can be asked
 	style:        Output_Style,
+	level:        Log_Level, // zero value .Info prints everything
 	progress:     ^Progress,
 	download_tags: proc(env: ^Env, repo: ^Git_Repository, directory, origin: string) -> bool,
 }
 
 ask_line :: proc(env: ^Env) -> string {
+	line, _ := ask_line_ended(env)
+	return line
+}
+
+// Reads one answer line. `ended` is true when input ended before a newline.
+ask_line_ended :: proc(env: ^Env) -> (line: string, ended: bool) {
 	builder := strings.builder_make()
 	buffer: [1]byte
 
 	for {
 		count, err := io.read(env.input, buffer[:])
-		if err != nil || count == 0 || buffer[0] == '\n' {
+		if err != nil || count == 0 {
+			ended = true
+			break
+		}
+
+		if buffer[0] == '\n' {
 			break
 		}
 		strings.write_byte(&builder, buffer[0])
 	}
 
-	return strings.trim_space(strings.to_string(builder))
+	return strings.trim_space(strings.to_string(builder)), ended
 }
 
 ask_yes :: proc(env: ^Env, question: string) -> bool {
@@ -142,6 +156,36 @@ stage_json :: proc(transaction: ^Transaction, path: string, value: any) -> bool 
 	}
 
 	return true
+}
+
+// Odin's JSON omitempty skips "" but not false, so the lockfile is written
+// through this shape: an unpinned record keeps the bytes it had before pins.
+Package_Record_Json :: struct {
+	name:   string,
+	source: string,
+	tag:    string,
+	commit: string,
+	hash:   string,
+	pinned: Maybe(bool) `json:"pinned,omitempty"`,
+}
+
+Packages_File_Json :: struct {
+	format:   int,
+	packages: [dynamic]Package_Record_Json,
+}
+
+// Writes a project lockfile; `pinned` appears only on pinned records.
+stage_packages :: proc(transaction: ^Transaction, path: string, file: Packages_File) -> bool {
+	out := Packages_File_Json{format = file.format}
+	for record in file.packages {
+		row := Package_Record_Json{name = record.name, source = record.source, tag = record.tag, commit = record.commit, hash = record.hash}
+		if record.pinned {
+			row.pinned = true
+		}
+
+		append(&out.packages, row)
+	}
+	return stage_json(transaction, path, out)
 }
 
 load_packages :: proc(env: ^Env) -> (file: Packages_File, ok: bool) {

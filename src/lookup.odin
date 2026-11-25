@@ -5,9 +5,10 @@ import "core:os"
 import "core:strings"
 
 Repository :: struct {
-	path:   string,
-	source: string,
-	tags:   [dynamic]string,
+	path:      string,
+	source:    string,
+	tags:      [dynamic]string,
+	tag_times: map[string]i64, // filled on demand by repository_load_times
 }
 
 Repository_Lookup :: struct {
@@ -78,6 +79,30 @@ repository_read :: proc(path: string, cached: bool) -> (repository: Repository, 
 	return repository, ""
 }
 
+// Commit times are read only when a target or format needs them.
+repository_load_times :: proc(state: ^State, repository: ^Repository) -> bool {
+	if len(repository.tag_times) > 0 {
+		return true
+	}
+
+	repo, ok := git_open(repository.path)
+	if !ok {
+		warn(state.env, "cannot read the tag dates of %s", repository.path)
+		return false
+	}
+	repository.tag_times = git_tag_times(repo, repository.tags[:])
+	git_close(repo)
+
+	// Keep the times for this command; the lookup does not record `cached`,
+	// so match it by path.
+	for _, &lookup in state.repositories {
+		if lookup.repository.path == repository.path {
+			lookup.repository.tag_times = repository.tag_times
+		}
+	}
+	return true
+}
+
 repository_has_tag :: proc(repository: ^Repository, tag: string) -> bool {
 	for existing in repository.tags {
 		if existing == tag {
@@ -114,6 +139,17 @@ repository_candidate :: proc(state: ^State, path, tag, origin: string, cached :=
 		return {}, false
 	}
 	return repository, true
+}
+
+// The repository of an installed record. Records in a committed vendor/
+// carry no machine path, so look the repository up again.
+manifest_repository :: proc(state: ^State, record: Manifest_Record) -> string {
+	if record.path != "" {
+		return record.path
+	}
+
+	repository, found := repository_find(state, record.name, record.tag, record.source)
+	return repository.path if found else ""
 }
 
 // Check configured source directories before cached GitHub repositories.

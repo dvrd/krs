@@ -12,12 +12,14 @@ USAGE_FORMAT :: `%[0]susage:%[1]s
       install the releases this project imports
   krs %[0]sstatus%[1]s [--root=<path>]
       list what the Odin root holds for this project
-  krs %[0]supdate%[1]s [--root=<path>] [--fetch]
-      list newer releases of this project's packages
-  krs %[0]supdate%[1]s <package>[@<tag>] [--root=<path>] [--fetch] [--yes]
-      install the latest release of a package, or the one named
-  krs %[0]supdate --all%[1]s [--root=<path>] [--fetch] [--yes]
-      update every package to its highest compatible release
+  krs %[0]supdate%[1]s [<package>[@<tag>]...] [--cooldown=<period>] [--deep] [--package-file=<p>] [options]
+      list newer releases; filter with names, -f, -x
+  krs %[0]supdate -u%[1]s [<package>[@<tag>]...] [--cooldown=<period>] [--deep] [--package-file=<p>] [options]
+      write the chosen versions to .krs/packages.json and install them
+  krs %[0]supdate -u --doctor%[1]s [--doctor-test=<cmd>] [--doctor-install=<cmd>] [--doctor-timeout=<d>] [options]
+      upgrade, run the tests and keep only the upgrades that pass
+  krs %[0]supdate -i%[1]s [<package>...] [--interactive-select=<which>] [--root=<path>]
+      choose which upgrades to take, then apply them
   krs %[0]sfetch%[1]s
       refresh the GitHub releases of the configured libraries
   krs %[0]sfetch%[1]s <owner>/<repo>
@@ -26,6 +28,12 @@ USAGE_FORMAT :: `%[0]susage:%[1]s
       use a checkout's live src/ in place of a release
   krs %[0]slink ls%[1]s [--root=<path>]
       list the links and flag broken ones
+  krs %[0]spin%[1]s <package> [--root=<path>]
+      hold a package at the release this project records
+  krs %[0]sunpin%[1]s <package> [--root=<path>]
+      let a pinned package be upgraded again
+  krs %[0]svendor%[1]s [--root=<path>] [--yes]
+      copy this project's dependencies into vendor/ and use them
   krs %[0]sunlink%[1]s <package> [--root=<path>] [--restore] [--yes]
       remove a link; with --restore, install the recorded release
   krs %[0]srecover%[1]s
@@ -42,8 +50,35 @@ USAGE_FORMAT :: `%[0]susage:%[1]s
   %[0]s--repair%[1]s       reinstall packages whose installed files were changed
   %[0]s--restore%[1]s      after unlink, install the recorded release in its place
   %[0]s--fetch%[1]s        before checking, refresh the GitHub releases of the packages
-  %[0]s--all%[1]s          update every package to its highest compatible tag
   %[0]s--yes%[1]s          do not ask before writing
+
+  update options:
+  %[0]s-u, --upgrade%[1]s           write .krs/packages.json and install
+  %[0]s--install%[1]s <m>           always, never (lockfile only) or prompt
+  %[0]s--pin%[1]s                   with -u: pin every chosen version
+  %[0]s-i, --interactive%[1]s       choose upgrades before applying them
+  %[0]s--interactive-select%[1]s    auto, none, patch, minor or all: what starts selected
+  %[0]s-c, --cooldown%[1]s <p>      ignore releases younger than this (7, 7d, 12h, 30m)
+  %[0]s-d, --doctor%[1]s            after upgrading, run the tests; keep only upgrades that pass
+  %[0]s--doctor-test%[1]s <cmd>     test command for --doctor (default: odin test .)
+  %[0]s--doctor-install%[1]s <cmd>  command run after each install for --doctor (default: none)
+  %[0]s--doctor-timeout%[1]s <d>    stop a --doctor command after 30s, 10m, 2h... (default: 30m)
+  %[0]s-t, --target%[1]s <t>        latest, greatest, newest, minor, patch or semver
+  %[0]s-f, --filter%[1]s <p>        only names matching p (name, a,b, glob*, /regex/, !name)
+  %[0]s-x, --reject%[1]s <p>        skip names matching p
+  %[0]s--filter-version%[1]s <p>    only current versions matching p
+  %[0]s--reject-version%[1]s <p>    skip current versions matching p
+  %[0]s--format%[1]s <v,...>        group, lines, time, repo, diff, installed-version, cooldown; no-<v> removes
+  %[0]s-j, --json-all%[1]s          print the new .krs/packages.json as JSON
+  %[0]s--json-upgraded%[1]s         print the upgrades as JSON
+  %[0]s--json-deps%[1]s             print the new package list as JSON
+  %[0]s-e, --error-level%[1]s <n>   2: exit 1 when upgrades are available
+  %[0]s-g, --global%[1]s            check every package of the Odin root
+  %[0]s--deep%[1]s                  check every project under this directory
+  %[0]s--package-file%[1]s <p>      check the projects whose lockfile matches p (repeatable)
+  %[0]s--color%[1]s                 force colors
+  %[0]s-s, --silent%[1]s            print nothing; use the exit code
+  %[0]s-l, --loglevel%[1]s <l>      silent, error, minimal, warn, info or verbose
 `
 
 EXIT_OK :: 0
@@ -79,9 +114,42 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 	}
 
 	options: Options
+	// Options is zero-initialised; these are the defaults of `krs update`.
+	options.update.format = {.Group}
+	options.update.error_level = 1
 	words: [dynamic]string
+	update_flag := "" // the first update-only flag given, for the guard below
+	log_level: Maybe(Log_Level)
+	interactive_select_given := false
+	doctor_flag := "" // the first of --doctor-test, --doctor-install and --doctor-timeout given
 
-	for argument in arguments {
+	for index := 0; index < len(arguments); index += 1 {
+		argument := arguments[index]
+		flag, value, inline := argument, "", false
+		if strings.has_prefix(argument, "--") {
+			if equals := strings.index_byte(argument, '='); equals >= 0 {
+				flag, value, inline = argument[:equals], argument[equals + 1:], true
+			}
+		}
+
+		if update_flag_takes_value(flag) {
+			if !inline {
+				if index + 1 >= len(arguments) {
+					fail(env, "%s needs a value", flag)
+					return EXIT_USAGE
+				}
+				index += 1
+				value = arguments[index]
+			}
+		} else if inline && flag != "--root" {
+			fail(env, "unknown option %s", argument)
+			return EXIT_USAGE
+		}
+
+		if update_flag == "" && update_flag_only(flag) {
+			update_flag = flag
+		}
+
 		switch {
 		case argument == "--frozen":
 			options.frozen = true
@@ -94,15 +162,149 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 		case argument == "--fetch":
 			options.fetch = true
 		case argument == "--all":
-			options.all = true
-		case strings.has_prefix(argument, "--root="):
-			options.root = argument[len("--root="):]
+			fail(env, "--all was removed; use krs update -u -t semver")
+			return EXIT_USAGE
+		case flag == "--root":
+			options.root = value
+		case flag == "-u" || flag == "--upgrade":
+			options.update.upgrade = true
+		case flag == "-t" || flag == "--target":
+			target, valid := update_target_parse(value)
+			if !valid {
+				fail(env, "%s is not a target; use latest, newest, greatest, minor, patch or semver", value)
+				return EXIT_USAGE
+			}
+			options.update.target = target
+		case flag == "-f" || flag == "--filter":
+			append(&options.update.filter, value)
+		case flag == "-x" || flag == "--reject":
+			append(&options.update.reject, value)
+		case flag == "--filter-version":
+			append(&options.update.filter_version, value)
+		case flag == "--reject-version":
+			append(&options.update.reject_version, value)
+		case flag == "--format":
+			for item in strings.split(value, ",", context.temp_allocator) {
+				format, enabled, valid := update_format_parse(item)
+				if !valid {
+					fail(env, "%s is not a format; use group, lines, time, repo, diff, installed-version or cooldown", item)
+					return EXIT_USAGE
+				}
+
+				if enabled {
+					options.update.format += {format}
+				} else {
+					options.update.format -= {format}
+				}
+			}
+		case flag == "-j" || flag == "--json-all":
+			options.update.json = .All
+		case flag == "--json-upgraded":
+			options.update.json = .Upgraded
+		case flag == "--json-deps":
+			options.update.json = .Deps
+		case flag == "-e" || flag == "--error-level":
+			switch value {
+			case "1":
+				options.update.error_level = 1
+			case "2":
+				options.update.error_level = 2
+			case:
+				fail(env, "%s is not an error level; use 1 or 2", value)
+				return EXIT_USAGE
+			}
+		case flag == "-g" || flag == "--global":
+			options.update.global = true
+		case flag == "--install":
+			switch value {
+			case "always":
+				options.update.install = .Always
+			case "never":
+				options.update.install = .Never
+			case "prompt":
+				options.update.install = .Prompt
+			case:
+				fail(env, "--install takes always, never or prompt")
+				return EXIT_USAGE
+			}
+			options.update.install_given = true
+		case flag == "-c" || flag == "--cooldown":
+			seconds, valid := cooldown_seconds(value)
+			if !valid {
+				fail(env, "%s is not a cooldown period; use a number of days, or 7d, 12h or 30m", value)
+				return EXIT_USAGE
+			}
+			options.update.cooldown = seconds
+		case flag == "--pin":
+			options.update.pin = true
+		case flag == "-i" || flag == "--interactive":
+			options.update.interactive = true
+			options.update.upgrade = true
+		case flag == "--interactive-select":
+			switch value {
+			case "auto":
+				options.update.interactive_select = .Auto
+			case "none":
+				options.update.interactive_select = .None
+			case "patch":
+				options.update.interactive_select = .Patch
+			case "minor":
+				options.update.interactive_select = .Minor
+			case "all":
+				options.update.interactive_select = .All
+			case:
+				fail(env, "%s is not a valid --interactive-select value; use auto, none, patch, minor or all", value)
+				return EXIT_USAGE
+			}
+			interactive_select_given = true
+		case flag == "-d" || flag == "--doctor":
+			options.update.doctor = true
+		case flag == "--doctor-test":
+			options.update.doctor_test = value
+			if doctor_flag == "" {
+				doctor_flag = flag
+			}
+		case flag == "--doctor-install":
+			options.update.doctor_install = value
+			if doctor_flag == "" {
+				doctor_flag = flag
+			}
+		case flag == "--doctor-timeout":
+			seconds, valid := doctor_timeout_seconds(value)
+			if !valid {
+				fail(env, "%s is not a timeout; use 30s, 10m or 2h", value)
+				return EXIT_USAGE
+			}
+
+			options.update.doctor_timeout = seconds
+			if doctor_flag == "" {
+				doctor_flag = flag
+			}
+		case flag == "--deep":
+			options.update.deep = true
+		case flag == "--package-file":
+			append(&options.update.package_files, value)
+		case flag == "--color":
+			env.style.stdout = true
+			env.style.color = true
+		case flag == "-s" || flag == "--silent":
+			log_level = .Silent
+		case flag == "-l" || flag == "--loglevel":
+			level, valid := log_level_parse(value)
+			if !valid {
+				fail(env, "%s is not a log level; use silent, error, minimal, warn, info or verbose", value)
+				return EXIT_USAGE
+			}
+			log_level = level
 		case strings.has_prefix(argument, "-"):
 			fail(env, "unknown option %s", argument)
 			return EXIT_USAGE
 		case:
 			append(&words, argument)
 		}
+	}
+	if level, given := log_level.?; given {
+		env.level = level
 	}
 
 	if options.restore && (len(words) == 0 || words[0] != "unlink") {
@@ -120,8 +322,122 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 		return EXIT_USAGE
 	}
 
-	if options.all && (len(words) != 1 || words[0] != "update") {
-		fail(env, "--all only applies to update without a package")
+	if update_flag != "" && (len(words) == 0 || words[0] != "update") {
+		fail(env, "%s only applies to update", update_flag)
+		return EXIT_USAGE
+	}
+
+	if options.update.doctor && !options.update.upgrade {
+		fail(env, "--doctor needs -u")
+		return EXIT_USAGE
+	}
+
+	if doctor_flag != "" && !options.update.doctor {
+		fail(env, "%s needs --doctor", doctor_flag)
+		return EXIT_USAGE
+	}
+
+	// Nothing would be installed, so every upgrade would pass the tests.
+	if options.update.doctor && options.update.install == .Never {
+		fail(env, "--doctor and --install=never cannot be combined")
+		return EXIT_USAGE
+	}
+
+	// A reverted package would stay pinned at its old tag.
+	if options.update.doctor && options.update.pin {
+		fail(env, "--doctor and --pin cannot be combined")
+		return EXIT_USAGE
+	}
+
+	// Global candidates may have no project record to restore.
+	if options.update.doctor && options.update.global {
+		fail(env, "--doctor and --global cannot be combined")
+		return EXIT_USAGE
+	}
+
+	if options.update.doctor && options.update.json != .None {
+		fail(env, "--doctor and JSON output cannot be combined")
+		return EXIT_USAGE
+	}
+
+	if options.update.doctor && options.update.interactive {
+		fail(env, "--doctor and -i cannot be combined")
+		return EXIT_USAGE
+	}
+
+	if options.update.upgrade && options.frozen {
+		fail(env, "--upgrade and --frozen cannot be combined")
+		return EXIT_USAGE
+	}
+
+	// Global candidates are root-only records; this project's lockfile must
+	// not receive them.
+	if options.update.upgrade && options.update.global {
+		fail(env, "-u and --global cannot be combined")
+		return EXIT_USAGE
+	}
+
+	if interactive_select_given && !options.update.interactive {
+		fail(env, "--interactive-select needs -i")
+		return EXIT_USAGE
+	}
+
+	if options.update.interactive {
+		for word in words[1:] {
+			if strings.contains_rune(word, '@') {
+				fail(env, "-i cannot be combined with name@tag")
+				return EXIT_USAGE
+			}
+		}
+	}
+
+	deep_run := options.update.deep || len(options.update.package_files) > 0
+	if deep_run && options.update.json != .None {
+		fail(env, "--deep and --package-file cannot be combined with JSON output")
+		return EXIT_USAGE
+	}
+
+	if deep_run && options.update.global {
+		fail(env, "--deep and --global cannot be combined")
+		return EXIT_USAGE
+	}
+
+	if options.update.pin && !options.update.upgrade {
+		fail(env, "--pin only applies to update -u")
+		return EXIT_USAGE
+	}
+
+	if options.update.install_given && !options.update.upgrade {
+		fail(env, "--install only applies to update -u")
+		return EXIT_USAGE
+	}
+
+	// -u writes; it does not report. `--format` is accepted and ignored.
+	if options.update.upgrade && options.update.json != .None {
+		json_flags := [Update_Json]string {
+			.None     = "",
+			.All      = "--json-all",
+			.Upgraded = "--json-upgraded",
+			.Deps     = "--json-deps",
+		}
+		fail(env, "%s cannot be combined with -u", json_flags[options.update.json])
+		return EXIT_USAGE
+	}
+
+	if options.update.upgrade && options.update.error_level != 1 {
+		fail(env, "--error-level cannot be combined with -u")
+		return EXIT_USAGE
+	}
+
+	// JSON and `--format lines` are read by programs: only errors may be
+	// printed besides them, from the start (recovery reports included).
+	if options.update.json != .None || .Lines in options.update.format {
+		env.level = min(env.level, Log_Level.Error)
+	}
+
+	// The chooser asks about a list it prints with `say`.
+	if options.update.interactive && env.level < .Minimal {
+		fail(env, "-i shows the upgrade list; it cannot be combined with --silent, --loglevel error|silent or --format lines")
 		return EXIT_USAGE
 	}
 
@@ -162,18 +478,21 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 		return EXIT_USAGE
 	}
 
+	if (words[0] == "pin" || words[0] == "unpin") && (options.frozen || options.yes) {
+		fail(env, "%s does not apply to %s", "--frozen" if options.frozen else "--yes", words[0])
+		return EXIT_USAGE
+	}
+
 	ok := false
 	switch {
 	case words[0] == "install" && len(words) == 1:
 		ok = command_install(env, options)
 	case words[0] == "status" && len(words) == 1:
 		ok = command_status(env, options)
-	case words[0] == "update" && len(words) == 1 && options.all:
-		ok = command_update_all(env, options)
-	case words[0] == "update" && len(words) == 1:
-		ok = command_outdated(env, options)
-	case words[0] == "update" && len(words) == 2:
-		ok = command_update(env, options, words[1])
+	case words[0] == "update" && deep_run:
+		ok = command_update_deep(env, options, words[:])
+	case words[0] == "update":
+		ok = update_dispatch(env, options, words[:])
 	case words[0] == "fetch" && len(words) == 1:
 		ok = command_fetch_all(env)
 	case words[0] == "fetch" && len(words) == 2:
@@ -184,6 +503,12 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 		ok = command_link(env, options, words[1])
 	case words[0] == "unlink" && len(words) == 2:
 		ok = command_unlink(env, options, words[1])
+	case words[0] == "pin" && len(words) == 2:
+		ok = command_pin(env, options, words[1], true)
+	case words[0] == "unpin" && len(words) == 2:
+		ok = command_pin(env, options, words[1], false)
+	case words[0] == "vendor" && len(words) == 1:
+		ok = command_vendor(env, options)
 	case words[0] == "recover" && len(words) == 1:
 		if options.yes {
 			fail(env, "--yes only applies to recover abandon")
@@ -205,6 +530,98 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 	return EXIT_OK if ok else EXIT_FAILED
 }
 
+// One `krs update` for the project at env.project: -u (with --doctor and -i
+// inside it) writes; without -u it only lists.
+update_dispatch :: proc(env: ^Env, options: Options, words: []string) -> bool {
+	if options.update.upgrade {
+		return command_update_upgrade(env, options, words[1:])
+	}
+
+	return command_check(env, options, words[1:])
+}
+
+// `krs update --deep` and `--package-file`: one update_dispatch per project,
+// each with its own locks and lockfile. A failing project does not stop the
+// others.
+command_update_deep :: proc(env: ^Env, options: Options, words: []string) -> bool {
+	start := env.project
+	projects := deep_projects(env, start) or_return
+	selected := make([dynamic]string, context.temp_allocator)
+	for project in projects {
+		relative := "." if project == start else project[len(start) + 1:]
+		lockfile := path_join(relative, PACKAGES_PATH) if relative != "." else PACKAGES_PATH
+		if len(options.update.package_files) > 0 {
+			chosen := false
+			for pattern in options.update.package_files {
+				if package_file_matches(pattern, lockfile) {
+					chosen = true
+					break
+				}
+			}
+
+			if !chosen {
+				continue
+			}
+		}
+		append(&selected, project)
+	}
+
+	if len(selected) == 0 {
+		return fail(env, "no project matches")
+	}
+
+	// state_open joins a relative root onto the project; every project here
+	// must get the root relative to where the command started.
+	deep_options := options
+	if deep_options.root != "" {
+		deep_options.root = path_expand_home(deep_options.root, env.home)
+		if !strings.has_prefix(deep_options.root, "/") {
+			deep_options.root = path_join(start, deep_options.root)
+		}
+	}
+
+	deep_default_root := env.default_root
+	if deep_default_root != "" {
+		deep_default_root = path_expand_home(deep_default_root, env.home)
+		if !strings.has_prefix(deep_default_root, "/") {
+			deep_default_root = path_join(start, deep_default_root)
+		}
+	}
+
+	all_ok := true
+	for project in selected {
+		relative := "." if project == start else project[len(start) + 1:]
+		say(env, "%v %s", paint(env, ANSI_CYAN, "project"), relative)
+		project_env := env^
+		project_env.project = project
+		project_env.default_root = deep_default_root
+		project_words := words
+		if len(words) > 1 {
+			used, usable := deep_used_words(&project_env, words)
+			if !usable {
+				all_ok = false
+				continue
+			}
+
+			project_words = used
+			if len(project_words) == 1 {
+				info(env, "%s: none of the named packages are used here", relative)
+				continue
+			}
+		}
+
+		if !update_dispatch(&project_env, deep_options, project_words) {
+			all_ok = false
+		}
+	}
+
+	if all_ok {
+		success(env, "%d project(s) checked", len(selected))
+	}
+
+	return all_ok
+}
+
 command_install :: proc(env: ^Env, options: Options) -> bool {
 	state := state_open(env, options) or_return
 	defer state_close(state)
@@ -215,144 +632,83 @@ command_install :: proc(env: ^Env, options: Options) -> bool {
 	return plan_apply(state)
 }
 
-// `krs update` with no argument: lists newer tags and changes nothing.
-command_outdated :: proc(env: ^Env, options: Options) -> bool {
+// `krs pin` and `krs unpin`: set or clear the hold on one recorded package.
+// Writes only the project lockfile.
+command_pin :: proc(env: ^Env, options: Options, name: string, pinned: bool) -> bool {
+	if !is_package_name(name) {
+		return fail(env, "\"%s\" is not a usable package name", name)
+	}
+
 	state := state_open(env, options) or_return
 	defer state_close(state)
-	found := 0
-	unavailable := 0
-
-	for record in state.manifest.packages {
-		if record.linked != "" || packages_find(&state.packages, record.name) == nil {
-			continue
-		}
-
-		if options.fetch {
-			refresh_package_cache(state, record.name, record.source)
-		}
-
-		repository, ok := repository_find(state, record.name, "", record.source)
-		if !ok {
-			warn(env, "cannot check %s: no usable repository", record.name)
-			unavailable += 1
-			continue
-		}
-
-		highest, _ := highest_tag(repository.tags[:])
-		current_version, current_ok := parse_tag(record.tag)
-		highest_version, _ := parse_tag(highest)
-		if !current_ok {
-			warn(env, "cannot check %s: invalid installed tag %s", record.name, record.tag)
-			unavailable += 1
-			continue
-		}
-
-		if version_compare(highest_version, current_version) != .Higher {
-			continue
-		}
-
-		compatibility := version_compatibility(current_version, highest_version)
-		say_version_change(env, record.name, record.tag, highest, compatibility)
-		found += 1
+	record := packages_find(&state.packages, name)
+	if record == nil {
+		return fail(env, "%s is not recorded in %s; run krs install first", name, PACKAGES_PATH)
 	}
 
-	if unavailable > 0 {
-		return fail(env, "could not check %d package(s) for updates", unavailable)
+	if record.tag == "" {
+		return fail(env, "%s has no recorded release to pin", name)
 	}
 
-	if found == 0 {
-		success(env, "every package of this project is at its highest tag")
+	if record.pinned == pinned {
+		if pinned {
+			info(env, "%s is already pinned at %s", name, record.tag)
+		} else {
+			info(env, "%s is not pinned", name)
+		}
+		return true
 	}
 
+	record.pinned = pinned
+	transaction := Transaction{env = env, scope = state.scope}
+	defer transaction_close(&transaction)
+	stage_packages(&transaction, path_join(state.scope.project, PACKAGES_PATH), state.packages) or_return
+	transaction_commit(&transaction) or_return
+
+	if pinned {
+		success(env, "%s is pinned at %s", name, record.tag)
+	} else {
+		success(env, "%s is no longer pinned", name)
+	}
 	return true
 }
 
-// `krs update --all`: moves every package of this project to its highest
-// compatible tag in one plan. Breaking tags are listed, never taken. Changes
-// nothing when any package cannot be checked.
-command_update_all :: proc(env: ^Env, options: Options) -> bool {
+// `krs update` without -u: lists newer tags and changes nothing. Positional
+// names (each optionally `name@tag`) choose which packages are checked.
+command_check :: proc(env: ^Env, options: Options, names: []string) -> bool {
 	if options.frozen {
 		return fail(env, "--frozen does not apply to update")
 	}
 
+	if options.update.global && options.update.json == .All {
+		return fail(env, "--json-all applies to a project, not --global")
+	}
+
+	if options.update.global && options.update.json == .Deps {
+		return fail(env, "--json-deps applies to a project, not --global")
+	}
+
+	query := update_query_make(env, options, names) or_return
+	defer update_query_destroy(query)
+
 	state := state_open(env, options) or_return
 	defer state_close(state)
-	unavailable := 0
-	queued := 0
+	candidates := update_candidates(state, query) or_return
+	if options.update.json != .None {
+		update_print_json(state, candidates[:], options.update.json) or_return
+	} else {
+		update_print(env, candidates[:], options.update)
+	}
 
-	for record in state.manifest.packages {
-		pin := packages_find(&state.packages, record.name)
-		if record.linked != "" || pin == nil {
-			continue
-		}
-
-		if options.fetch {
-			refresh_package_cache(state, record.name, record.source)
-		}
-
-		repository, found := repository_find(state, record.name, "", record.source)
-		if !found {
-			warn(env, "cannot check %s: no usable repository", record.name)
-			unavailable += 1
-			continue
-		}
-
-		current, current_ok := parse_tag(pin.tag)
-		if !current_ok {
-			warn(env, "cannot check %s: invalid installed tag %s", record.name, pin.tag)
-			unavailable += 1
-			continue
-		}
-
-		chosen := ""
-		chosen_version: Version
-		for tag in repository.tags {
-			version, valid := parse_tag(tag)
-			if !valid || version_compatibility(current, version) != .Compatible {
-				continue
-			}
-
-			if chosen == "" || version_compare(version, chosen_version) == .Higher {
-				chosen = tag
-				chosen_version = version
+	// `-e 2` lets CI fail when an upgrade is available; it is not an error.
+	if options.update.error_level == 2 {
+		for candidate in candidates {
+			if !candidate.pinned && candidate_upgrades(candidate) {
+				return false
 			}
 		}
-
-		highest, _ := highest_tag(repository.tags[:])
-		highest_version, highest_ok := parse_tag(highest)
-		if highest_ok && version_compare(highest_version, current) == .Higher &&
-		   version_compatibility(current, highest_version) != .Compatible {
-			note(env, "%s %s is available; run %s to take it", record.name, highest, fmt.tprintf("krs update %s", record.name))
-		}
-
-		if chosen == "" {
-			continue
-		}
-
-		higher := version_compare(chosen_version, current) == .Higher
-		stale := chosen == record.tag && pin.tag != record.tag
-		if !higher && !stale {
-			continue
-		}
-
-		say_version_change(env, record.name, pin.tag, chosen, .Compatible)
-		append(&state.queue, Request{name = record.name, tag = chosen, source = record.source, by = "krs update --all", kind = .Update, recorded = true, source_trusted = true})
-		queued += 1
 	}
-
-	if unavailable > 0 {
-		return fail(env, "could not check %d package(s); nothing was changed", unavailable)
-	}
-
-	if queued == 0 {
-		success(env, "every package of this project is at its highest compatible tag")
-		return true
-	}
-
-	plan_discover(state) or_return
-	plan_drain(state) or_return
-
-	return plan_apply(state)
+	return true
 }
 
 // Lists the installed packages whose own records name another version.
@@ -362,7 +718,7 @@ update_report_dependants :: proc(state: ^State, name, tag: string) {
 			continue
 		}
 
-		release, ok := git_release_open(record.path, record.tag, record.commit)
+		release, ok := git_release_open(manifest_repository(state, record), record.tag, record.commit)
 		if !ok {
 			continue
 		}
@@ -378,82 +734,6 @@ update_report_dependants :: proc(state: ^State, name, tag: string) {
 			say(state.env, "  %s %s recorded %s %s", record.name, record.tag, name, pin.tag)
 		}
 	}
-}
-
-command_update :: proc(env: ^Env, options: Options, target: string) -> bool {
-	name := target
-	tag := ""
-	at := strings.index_byte(target, '@')
-	if at >= 0 {
-		name = target[:at]
-		tag = target[at + 1:]
-		if _, valid := parse_tag(tag); !valid {
-			return fail(env, "%s is not a vMAJOR.MINOR.PATCH tag", tag)
-		}
-	}
-
-	if options.frozen {
-		return fail(env, "--frozen does not apply to update")
-	}
-
-	state := state_open(env, options) or_return
-	defer state_close(state)
-	record := manifest_find(&state.manifest, name)
-	if record == nil {
-		return fail(env, "%s was not installed by krs in %s", name, state.shared)
-	}
-
-	if record.linked != "" {
-		return fail(env, "%s is linked; run krs unlink %s first", name, name)
-	}
-
-	pin := packages_find(&state.packages, name)
-	if pin == nil {
-		imports, scanned := scan_directory_imports(state.env.project, path_base(state.env.project))
-		if !scanned {
-			return fail(env, "cannot read the Odin files under %s", state.env.project)
-		}
-
-		if !slice.contains(imports[:], name) {
-			return fail(env, "%s is not used by this project; run krs update in a project that imports it", name)
-		}
-	}
-
-	if options.fetch {
-		refresh_package_cache(state, name, record.source)
-	}
-
-	repository, found := repository_find(state, name, tag, record.source)
-	if !found {
-		return fail(env, "no usable repository for \"%s\" in the source directories or repository store", name)
-	}
-
-	if tag == "" {
-		tag, _ = highest_tag(repository.tags[:])
-	}
-
-	if tag == record.tag && (pin == nil || pin.tag == tag) {
-		repository_tag_commit(env, repository.path, name, tag, record.commit) or_return
-		success(env, "%s is already at %s", name, tag)
-		return true
-	}
-
-	from := pin.tag if pin != nil else record.tag
-	old_version, old_ok := parse_tag(from)
-	new_version, _ := parse_tag(tag)
-	compatibility := Version_Compatibility.Breaking
-	if old_ok {
-		compatibility = version_compatibility(old_version, new_version)
-	}
-
-	say_version_change(env, name, from, tag, compatibility)
-	update_report_dependants(state, name, tag)
-
-	append(&state.queue, Request{name = name, tag = tag, source = record.source, by = "krs update", kind = .Update, recorded = true, source_trusted = true})
-	plan_discover(state) or_return
-	plan_drain(state) or_return
-
-	return plan_apply(state)
 }
 
 // Prints `name from -> to (compatibility)` for an available or chosen update.
@@ -493,6 +773,10 @@ command_link :: proc(env: ^Env, options: Options, name: string) -> bool {
 
 	state := state_open(env, options) or_return
 	defer state_close(state)
+	if state.vendored {
+		return fail(env, "%s uses vendor/; links are not available in vendor mode", state.scope.project)
+	}
+
 	repository, found := link_find(state, name)
 	if !found {
 		return fail(env, "no repository with a src/ for \"%s\" in the source directories", name)
@@ -675,8 +959,11 @@ command_status :: proc(env: ^Env, options: Options) -> bool {
 
 	state := state_open(env, options) or_return
 	defer state_close(state)
+	if state.vendored {
+		info(env, "vendor mode: packages come from %s (build with %s)", state.shared, "-collection:shared=vendor")
+	}
 
-	imports, scanned := scan_directory_imports(env.project, path_base(env.project))
+	imports, scanned := scan_directory_imports(env.project, path_base(env.project), true)
 	if !scanned {
 		return fail(env, "cannot read the Odin files under %s", env.project)
 	}
@@ -861,6 +1148,10 @@ command_unlink :: proc(env: ^Env, options: Options, name: string) -> bool {
 
 	state := state_open(env, options) or_return
 	defer state_close(state)
+	if state.vendored {
+		return fail(env, "%s uses vendor/; links are not available in vendor mode", state.scope.project)
+	}
+
 	record := manifest_find(&state.manifest, name)
 	if record == nil || record.linked == "" {
 		return fail(env, "%s is not linked in %s", name, state.shared)

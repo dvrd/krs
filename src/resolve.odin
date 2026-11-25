@@ -107,7 +107,7 @@ decision_create :: proc(state: ^State, name: string) -> ^Decision {
 	decision.tag = record.tag
 	decision.commit = record.commit
 	decision.source = record.source
-	decision.repository = record.path
+	decision.repository = manifest_repository(state, record^)
 	decision.hash = record.hash
 	decision.installed_tag = record.tag
 
@@ -376,7 +376,7 @@ enqueue_dependencies :: proc(state: ^State, decision: ^Decision, recorded: bool,
 		return true
 	case .Linked:
 		read_ok: bool
-		imports, read_ok = scan_directory_imports(path_join(state.shared, decision.name), decision.name)
+		imports, read_ok = scan_directory_imports(path_join(state.shared, decision.name), decision.name, false)
 		if !read_ok {
 			return fail(state.env, "cannot scan the installed files of %s", by)
 		}
@@ -404,7 +404,7 @@ enqueue_dependencies :: proc(state: ^State, decision: ^Decision, recorded: bool,
 			}
 		} else if decision.action == .Keep {
 			read_ok: bool
-			imports, read_ok = scan_directory_imports(path_join(state.shared, decision.name), decision.name)
+			imports, read_ok = scan_directory_imports(path_join(state.shared, decision.name), decision.name, false)
 			if !read_ok {
 				return fail(state.env, "cannot scan the installed files of %s", by)
 			}
@@ -441,10 +441,22 @@ plan_request :: proc(state: ^State, request: Request) -> bool {
 		decision = decision_create(state, request.name)
 		pin := packages_find(&state.packages, request.name)
 		if pin != nil && request.kind == .Dependency {
+			// A pin is never reconciled with what shared/ holds; plan 025 turns this case into vendor/.
+			// installed_tag survives --repair, which clears decision.tag.
+			if pin.pinned && decision.installed_tag != "" && decision.installed_tag != pin.tag {
+				decision.failed = true
+				return fail(state.env, "%s is pinned at %s but %s holds %s; run %s, or %s", pin.name, pin.tag, state.shared, decision.installed_tag, "krs vendor", fmt.tprintf("krs unpin %s", pin.name))
+			}
+
 			own := Request{name = pin.name, tag = pin.tag, commit = pin.commit, source = pin.source, by = "this project", source_trusted = true}
 			if !decision_apply(state, decision, own) {
 				decision.failed = true
 				return false
+			}
+
+			// A pinned package keeps the project's tag; dependency requests only note it.
+			if pin.pinned {
+				decision.forced = true
 			}
 		}
 	}

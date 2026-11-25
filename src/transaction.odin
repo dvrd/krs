@@ -263,9 +263,12 @@ journal_change_valid :: proc(scope: Journal_Scope, change: Journal_Change) -> bo
 	}
 
 	shared := path_join(scope.root, "shared")
+	vendor := path_join(scope.project, VENDOR_DIR)
 	return change.target == path_join(shared, MANIFEST_PATH) ||
+	       change.target == path_join(vendor, MANIFEST_PATH) ||
 	       change.target == path_join(scope.project, PACKAGES_PATH) ||
-	       (path_directory(change.target) == shared && is_package_name(path_base(change.target)))
+	       (path_directory(change.target) == shared && is_package_name(path_base(change.target))) ||
+	       (path_directory(change.target) == vendor && is_package_name(path_base(change.target)))
 }
 
 // Reverse the two renames using identities recorded before publication. Each
@@ -439,8 +442,10 @@ journal_recover_partial :: proc(
 	}
 
 	lockfile := path_join(record.scope.project, PACKAGES_PATH)
+	vendor := path_join(record.scope.project, VENDOR_DIR)
 	for change in changes {
-		if !journal_change_valid(current, change) && change.target != lockfile {
+		moot := change.target == lockfile || strings.has_prefix(change.target, strings.concatenate({vendor, "/"}))
+		if !journal_change_valid(current, change) && !moot {
 			fail(env, "cannot recover %s of transaction %d from here", change.target, record.id)
 			return .Skipped
 		}
