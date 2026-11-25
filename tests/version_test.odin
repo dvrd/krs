@@ -1,6 +1,7 @@
 package tests
 
 import "core:fmt"
+import "core:log"
 import "core:os"
 import "core:strings"
 import "core:testing"
@@ -1020,4 +1021,67 @@ update_all_changes_nothing_when_a_package_cannot_be_checked :: proc(t: ^testing.
 
 	expect_failure(&fixture, run(&fixture, "", "update", "--all", "--yes"), "nothing was changed")
 	expect_release(&fixture, "gamma", "v0.1.0")
+}
+
+// Builds delta <- gamma <- beta <- alpha, each importing the next.
+resolution_chain :: proc(fixture: ^Fixture) {
+	library_release(fixture, "delta", "v0.1.0")
+	library_release(fixture, "gamma", "v0.1.0", "delta")
+	library_release(fixture, "beta", "v0.1.0", "gamma")
+	library_release(fixture, "alpha", "v0.1.0", "beta")
+	project_imports(fixture, "alpha")
+}
+
+// Resolves the project once and returns what the resolution touched.
+resolution_counts :: proc(t: ^testing.T, fixture: ^Fixture) -> (counts: krs.Resolution_Counts, ok: bool) {
+	output := strings.builder_make()
+	env := krs.Env {
+		project      = fixture.project,
+		home         = fixture.home,
+		default_root = fixture.root,
+		out          = strings.to_writer(&output),
+		err          = strings.to_writer(&output),
+	}
+	state, opened := krs.state_open(&env, {})
+	if !testing.expect(t, opened, strings.to_string(output)) {
+		return {}, false
+	}
+	defer krs.state_close(state)
+
+	resolved := krs.plan_discover(state) && krs.plan_drain(state)
+	testing.expect(t, resolved, strings.to_string(output))
+	log.infof("%v", state.counts)
+	return state.counts, resolved
+}
+
+@(test)
+resolution_touches_each_repository_once :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+
+	{
+		// A fresh root: every package resolves from scratch on each pass.
+		fixture := fixture_make(t)
+		defer fixture_destroy(&fixture)
+		resolution_chain(&fixture)
+
+		counts, ok := resolution_counts(t, &fixture)
+		if ok {
+			testing.expectf(t, counts.repository_opens > 0, "%v", counts)
+			testing.expectf(t, counts.selections > 0, "%v", counts)
+		}
+	}
+
+	{
+		// After an install: every package is kept at its own project pin.
+		fixture := fixture_make(t)
+		defer fixture_destroy(&fixture)
+		resolution_chain(&fixture)
+		expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
+
+		counts, ok := resolution_counts(t, &fixture)
+		if ok {
+			testing.expectf(t, counts.installed_hashes > 0, "%v", counts)
+			testing.expectf(t, counts.selections > 0, "%v", counts)
+		}
+	}
 }

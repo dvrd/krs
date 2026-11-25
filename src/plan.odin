@@ -76,6 +76,15 @@ Repository :: struct {
 	tags:   [dynamic]string,
 }
 
+// How often a command touched Git or the disk; tests assert the caches work.
+Resolution_Counts :: struct {
+	repository_opens: int,
+	tag_resolves:     int,
+	selections:       int,
+	installed_hashes: int,
+	fetches:          int,
+}
+
 State :: struct {
 	env:       ^Env,
 	options:   Options,
@@ -93,6 +102,7 @@ State :: struct {
 	fetch_configured: bool,
 	version_answers:  map[Version_Conflict]string,
 	version_question: Version_Conflict,
+	counts:           Resolution_Counts,
 }
 
 // The Odin root to work on: `--root`, else `ODIN_ROOT`, else `odin root`.
@@ -151,7 +161,8 @@ report_once :: proc(state: ^State, format: string, arguments: ..any) {
 	say(state.env, "%v", message)
 }
 
-repository_open :: proc(path: string, cached := false) -> (repository: Repository, reason: string) {
+repository_open :: proc(state: ^State, path: string, cached := false) -> (repository: Repository, reason: string) {
+	state.counts.repository_opens += 1
 	repo, ok := git_open(path)
 	if !ok {
 		return {}, "it is not a Git repository"
@@ -194,7 +205,7 @@ repository_candidate :: proc(state: ^State, path, tag, origin: string, cached :=
 	}
 
 	reason: string
-	repository, reason = repository_open(path, cached)
+	repository, reason = repository_open(state, path, cached)
 	if reason == "" && cached {
 		if _, valid := github_repository_from_origin(repository.source); !valid {
 			reason = "it has no HTTPS GitHub origin"
@@ -299,6 +310,7 @@ repository_resolve :: proc(state: ^State, name, tag, source, commit: string, sou
 			return {}, fail(state.env, "the GitHub repository in libs.%s does not match the recorded origin %q", name, origin)
 		}
 
+		state.counts.fetches += 1
 		cache_github_repository(state.env, github) or_return
 		if refreshed, available := repository_candidate(state, github_cache_path(state.env, github), tag, origin, true); available {
 			repository_check_pin(state, name, wanted, refreshed)
@@ -358,6 +370,7 @@ decision_create :: proc(state: ^State, name: string) -> ^Decision {
 	decision.installed_tag = record.tag
 
 	hash, ok := hash_directory(directory)
+	state.counts.installed_hashes += 1
 	if !ok || hash != record.hash {
 		warn(state.env, "%s does not match the hash recorded for %s %s", directory, name, record.tag)
 		if state.options.repair {
@@ -406,6 +419,7 @@ decision_set_tag :: proc(state: ^State, decision: ^Decision, tag, source, commit
 	}
 
 	resolved := repository_tag_commit(state.env, repository.path, decision.name, chosen, commit) or_return
+	state.counts.tag_resolves += 1
 	decision.tag = chosen
 	decision.commit = resolved
 	decision.source = repository.source
@@ -546,6 +560,7 @@ decision_selection :: proc(state: ^State, decision: ^Decision, release: Git_Rele
 	}
 
 	selection, ok := select_files(Source{release = release}, decision.name)
+	state.counts.selections += 1
 	if !ok && selection.problem != "" {
 		return fail(state.env, "cannot install %s %s: %v", decision.name, decision.tag, selection.problem)
 	}
