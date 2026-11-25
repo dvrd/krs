@@ -3,10 +3,12 @@ package krs
 import "core:fmt"
 import "core:io"
 import "core:os"
+import "core:slice"
 import "core:strings"
 
 USAGE_FORMAT :: `%[0]susage:%[1]s
   krs %[0]sinstall%[1]s [--root=<path>] [--frozen] [--yes]
+  krs %[0]sstatus%[1]s [--root=<path>]
   krs %[0]supdate%[1]s [<package>[@<tag>]] [--root=<path>] [--yes]
   krs %[0]sfetch%[1]s <owner>/<repo>
   krs %[0]slink%[1]s <package> [--root=<path>]
@@ -88,6 +90,8 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 	switch {
 	case words[0] == "install" && len(words) == 1:
 		ok = command_install(env, options)
+	case words[0] == "status" && len(words) == 1:
+		ok = command_status(env, options)
 	case words[0] == "update" && len(words) == 1:
 		ok = command_outdated(env, options)
 	case words[0] == "update" && len(words) == 2:
@@ -339,6 +343,157 @@ command_link :: proc(env: ^Env, options: Options, name: string) -> bool {
 	transaction_commit(&transaction) or_return
 
 	success(env, "%s is linked to %s; every project on this Odin root now builds against it", name, source)
+	return true
+}
+
+Status_Row :: struct {
+	name:      string,
+	label:     string, // e.g. "installed v1.2.0"
+	color:     string, // ANSI_GREEN, ANSI_YELLOW, ANSI_CYAN or ANSI_DIM
+	notes:     [dynamic]string, // already painted, printed with %v
+	attention: bool,
+}
+
+// One row per package the Odin root holds or this project imports or pins.
+// Reads the root and the project; writes nothing.
+status_rows :: proc(state: ^State, imports: []string) -> [dynamic]Status_Row {
+	rows: [dynamic]Status_Row
+	env := state.env
+
+	for record in state.manifest.packages {
+		row := Status_Row{name = record.name}
+		pinned := packages_find(&state.packages, record.name)
+		used := pinned != nil || slice.contains(imports, record.name)
+
+		if record.linked != "" {
+			link, current := link_state(state.shared, record)
+			if link == .Working {
+				row.label = fmt.tprintf("linked -> %s", record.linked)
+				row.color = ANSI_GREEN
+			} else {
+				row.label = fmt.tprintf("link broken (%s)", link_state_text(link, current))
+				row.color = ANSI_YELLOW
+				row.attention = true
+			}
+		} else {
+			directory := path_join(state.shared, record.name)
+			if !path_present(directory) {
+				row.label = fmt.tprintf("missing %s", record.tag)
+				row.color = ANSI_YELLOW
+				row.attention = true
+			} else if hash, ok := hash_directory(directory); !ok || hash != record.hash {
+				row.label = fmt.tprintf("altered %s", record.tag)
+				row.color = ANSI_YELLOW
+				row.attention = true
+			} else {
+				row.label = fmt.tprintf("installed %s", record.tag)
+				row.color = ANSI_GREEN
+			}
+
+			if pinned != nil && pinned.tag != record.tag {
+				append(&row.notes, paint(env, ANSI_YELLOW, fmt.tprintf("pin %s", pinned.tag)))
+				row.attention = true
+			}
+		}
+
+		if !used {
+			append(&row.notes, paint(env, ANSI_DIM, "not imported here"))
+		}
+		append(&rows, row)
+	}
+
+	entries, _ := os.read_all_directory_by_path(state.shared, context.temp_allocator)
+	for entry in entries {
+		if entry.type != .Directory && entry.type != .Symlink {
+			continue
+		}
+
+		if strings.has_prefix(entry.name, ".") || manifest_find(&state.manifest, entry.name) != nil {
+			continue
+		}
+
+		row := Status_Row{name = entry.name, label = "unmanaged", color = ANSI_DIM}
+		if packages_find(&state.packages, entry.name) != nil || slice.contains(imports, entry.name) {
+			append(&row.notes, paint(env, ANSI_YELLOW, "pinned but not managed"))
+			row.attention = true
+		}
+		append(&rows, row)
+	}
+
+	missing := make([dynamic]string, context.temp_allocator)
+	for name in imports {
+		append(&missing, name)
+	}
+	for pinned in state.packages.packages {
+		append(&missing, pinned.name)
+	}
+	for name in missing {
+		known := false
+		for row in rows {
+			if row.name == name {
+				known = true
+				break
+			}
+		}
+
+		if known {
+			continue
+		}
+
+		append(&rows, Status_Row{name = name, label = "not installed", color = ANSI_YELLOW, attention = true})
+	}
+
+	slice.sort_by(rows[:], proc(a, b: Status_Row) -> bool {
+		return a.name < b.name
+	})
+	return rows
+}
+
+// `krs status`: what the Odin root holds and what needs attention. Writes nothing.
+command_status :: proc(env: ^Env, options: Options) -> bool {
+	if options.frozen || options.yes {
+		return fail(env, "status takes only --root")
+	}
+
+	state := state_open(env, options) or_return
+	defer state_close(state)
+
+	imports, scanned := scan_directory_imports(env.project, path_base(env.project))
+	if !scanned {
+		return fail(env, "cannot read the Odin files under %s", env.project)
+	}
+
+	rows := status_rows(state, imports[:])
+	if len(rows) == 0 {
+		info(env, "nothing is installed in %s and this project imports nothing", state.shared)
+		success(env, "everything is in place")
+		return true
+	}
+
+	width := 0
+	attention := 0
+	for row in rows {
+		width = max(width, len(row.name))
+		if row.attention {
+			attention += 1
+		}
+	}
+
+	info(env, "%d package(s) in %s", len(rows), state.shared)
+	for row in rows {
+		padding := strings.repeat(" ", width - len(row.name), context.temp_allocator)
+		b := strings.builder_make(context.temp_allocator)
+		for n in row.notes {
+			fmt.sbprintf(&b, "  %v", n)
+		}
+		say(env, "  %s%v %v%v", row.name, padding, paint(env, row.color, row.label), strings.to_string(b))
+	}
+
+	if attention > 0 {
+		return fail(env, "%d package(s) need attention", attention)
+	}
+
+	success(env, "everything is in place")
 	return true
 }
 

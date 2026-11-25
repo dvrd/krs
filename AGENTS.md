@@ -47,6 +47,7 @@ Set `KRS_NO_ANIMATION=1` to keep terminal colors with static output. Set
 `NO_COLOR=1` to turn off colors and animations in `krs` and `task install`.
 
 - `krs install` resolves the project's `shared:` imports. With the example config, `import "shared:kessel"` can fetch `dvrd/kessel` automatically when a matching local or cached release is missing. Use `--frozen` to require the versions already recorded in `.krs/packages.json`.
+- `krs status` lists what the Odin root holds for this project and exits 1 when a package is altered, missing, broken or pinned differently.
 - `krs update` lists newer local tags. Use `krs update surf` to install the latest or `krs update surf@v1.2.3` to select a release.
 - `krs fetch dvrd/kessel` selects or refreshes GitHub releases over HTTPS. Then run `krs install` or `krs update kessel`.
 - `krs link surf` uses the checkout's live `src/`. `krs link ls` lists the links and flags broken ones. `krs unlink surf` removes the link from `shared/`. Add `--restore` to install the recorded release in its place.

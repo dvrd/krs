@@ -552,3 +552,92 @@ unlink_restore_refuses_a_foreign_path :: proc(t: ^testing.T) {
 	testing.expect(t, os.is_directory(directory))
 	testing.expect_value(t, manifest_text(&fixture), manifest)
 }
+
+@(test)
+status_reports_a_clean_root :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	library_release(&fixture, "beta", "v0.1.0")
+	project_imports(&fixture, "beta")
+	expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
+
+	result := run(&fixture, "", "status")
+	expect_ok(&fixture, result)
+	expect_contains(&fixture, result.out, "installed v0.1.0")
+	expect_contains(&fixture, result.out, "everything is in place")
+}
+
+@(test)
+status_reports_each_state :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	library_release(&fixture, "beta", "v0.1.0")
+	project_imports(&fixture, "beta")
+	expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
+
+	write_file(t, krs.path_join(fixture.shared, "beta/beta.odin"), "package beta\n\nEDITED :: true\n")
+	write_file(t, krs.path_join(fixture.shared, "hand/hand.odin"), "package hand\n")
+	link_fresh(&fixture, "fresh")
+	link_fresh(&fixture, "gone")
+	testing.expect(t, os.remove(krs.path_join(fixture.shared, "gone")) == nil)
+	project_imports(&fixture, "beta", "absent")
+
+	result := run(&fixture, "", "status")
+	expect_failure(&fixture, result, "need attention")
+	testing.expect(t, result.code == krs.EXIT_FAILED)
+	expect_contains(&fixture, result.out, "altered v0.1.0")
+	expect_contains(&fixture, result.out, "unmanaged")
+	expect_contains(&fixture, result.out, "linked -> ")
+	expect_contains(&fixture, result.out, "not imported here")
+	expect_contains(&fixture, result.out, "link broken (missing from shared/)")
+	expect_contains(&fixture, result.out, "not installed")
+}
+
+@(test)
+status_reports_a_pin_that_differs :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	library_release(&fixture, "beta", "v0.1.0")
+	project_imports(&fixture, "beta")
+	expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
+
+	repinned, _ := strings.replace_all(packages_text(&fixture), "\"v0.1.0\"", "\"v0.2.0\"")
+	write_file(t, krs.path_join(fixture.project, krs.PACKAGES_PATH), repinned)
+	result := run(&fixture, "", "status")
+	expect_failure(&fixture, result, "need attention")
+	expect_contains(&fixture, result.out, "pin v0.2.0")
+}
+
+@(test)
+status_writes_nothing :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	library_release(&fixture, "beta", "v0.1.0")
+	project_imports(&fixture, "beta")
+	expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
+	write_file(t, krs.path_join(fixture.shared, "beta/beta.odin"), "package beta\n\nEDITED :: true\n")
+	link_fresh(&fixture, "fresh")
+
+	manifest := manifest_text(&fixture)
+	packages := packages_text(&fixture)
+	run(&fixture, "", "status")
+	testing.expect(t, manifest_text(&fixture) == manifest)
+	testing.expect(t, packages_text(&fixture) == packages)
+}
+
+@(test)
+status_rejects_write_options :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	expect_failure(&fixture, run(&fixture, "", "status", "--yes"), "status takes only --root")
+}
