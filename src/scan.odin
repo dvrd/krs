@@ -88,6 +88,13 @@ scanner_quoted :: proc(scanner: ^Scanner, quote: u8) -> (literal: string, closed
 	scanner.offset += 1
 	raw := quote == '`'
 
+	// Rune literals have no triple form.
+	if quote != '\'' && scanner.offset + 1 < len(scanner.source) &&
+	   scanner.source[scanner.offset] == quote && scanner.source[scanner.offset + 1] == quote {
+		scanner.offset += 2
+		return scanner_triple_quoted(scanner, start, quote)
+	}
+
 	for scanner.offset < len(scanner.source) {
 		c := scanner.source[scanner.offset]
 		scanner.offset += 1
@@ -100,6 +107,26 @@ scanner_quoted :: proc(scanner: ^Scanner, quote: u8) -> (literal: string, closed
 		}
 
 		if !raw && c == '\\' && scanner.offset < len(scanner.source) {
+			scanner.offset += 1
+		}
+	}
+
+	return "", false
+}
+
+// Mirrors the compiler's tokenizer: the closing check comes before the escape
+// check, newlines are allowed, and only the double-quoted form has escapes.
+scanner_triple_quoted :: proc(scanner: ^Scanner, start: int, quote: u8) -> (literal: string, closed: bool) {
+	for scanner.offset < len(scanner.source) {
+		c := scanner.source[scanner.offset]
+		scanner.offset += 1
+		if c == quote && scanner.offset + 1 < len(scanner.source) &&
+		   scanner.source[scanner.offset] == quote && scanner.source[scanner.offset + 1] == quote {
+			scanner.offset += 2
+			return scanner.source[start:scanner.offset], true
+		}
+
+		if quote == '"' && c == '\\' && scanner.offset < len(scanner.source) {
 			scanner.offset += 1
 		}
 	}

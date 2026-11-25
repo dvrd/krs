@@ -147,6 +147,44 @@ COMPUTED :: #load("assets/" + NAME, string)
 }
 
 @(test)
+scan_reads_triple_quoted_strings_as_one_literal :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+
+	source := `package demo
+
+DOC :: """
+	import "shared:fake_one"
+	#load("fake.txt")
+	/* never closed
+	an escaped \""" does not close it
+"""
+` + "```" + `
+	import "shared:fake_two"
+	#load_directory("fake_dir")
+` + "```" + `
+X :: ""
+import "shared:after_empty"
+import "shared:real"
+DATA :: #load("real.txt", string)
+`
+	result := krs.scan_source(source)
+	testing.expect(t, slice.equal(result.shared_imports[:], []string{"after_empty", "real"}))
+	testing.expect(t, slice.equal(result.file_refs[:], []string{"real.txt"}))
+	testing.expect_value(t, len(result.directory_refs), 0)
+	testing.expect_value(t, len(result.unresolved), 0)
+}
+
+@(test)
+scan_decodes_triple_quoted_import_path :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+
+	result := krs.scan_source(`package demo
+import """shared:tripled"""
+`)
+	testing.expect(t, slice.equal(result.shared_imports[:], []string{"tripled"}))
+}
+
+@(test)
 output_highlights_string_values :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 
