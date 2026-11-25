@@ -1797,6 +1797,55 @@ doctor_restores_the_lockfile_byte_for_byte :: proc(t: ^testing.T) {
 }
 
 @(test)
+doctor_byte_check_ignores_the_install_hook :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	upgrades_fixture(&fixture)
+
+	// The hook changes the lockfile on every run, the baseline included; the
+	// bytes a revert must match are the ones from before the baseline.
+	test := fmt.aprintf("--doctor-test=%s", beta_breaks_on(fixture.shared))
+	result := run(&fixture, "", "update", "-u", "--doctor", "--yes", "--doctor-install=printf ' ' >> .krs/packages.json", test)
+	testing.expectf(t, result.code == 1, "exit %d\nout: %s\nerr: %s", result.code, result.out, result.err)
+	testing.expectf(t, !strings.contains(result.err, "byte for byte"), "unexpected byte check failure: %s", result.err)
+	expect_contains(&fixture, result.out, "breaks the tests")
+	expect_release(&fixture, "beta", "v0.4.0")
+}
+
+@(test)
+doctor_refuses_a_lockfile_behind_the_root :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	a := fixture_make(t)
+	defer fixture_destroy(&a)
+
+	library_release(&a, "beta", "v0.1.0")
+	project_imports(&a, "beta")
+	expect_ok(&a, run(&a, "", "install", "--yes"))
+
+	// Project B, on the same Odin root, moves beta to a compatible release.
+	b := fixture_make(t)
+	defer fixture_destroy(&b)
+	b.root = a.root
+	b.shared = a.shared
+	b.home = a.home
+	b.sources = a.sources
+	project_imports(&b, "beta")
+	expect_ok(&b, run(&b, "", "install", "--yes"))
+	library_release(&a, "beta", "v0.1.1")
+	expect_ok(&b, run(&b, "", "update", "-u", "--yes"))
+	expect_release(&a, "beta", "v0.1.1")
+
+	packages := packages_text(&a)
+	manifest := manifest_text(&a)
+	result := run(&a, "", "update", "-u", "--doctor", "--yes", "--doctor-test=true")
+	expect_failure(&a, result, "run krs install first")
+	testing.expect_value(t, packages_text(&a), packages)
+	testing.expect_value(t, manifest_text(&a), manifest)
+}
+
+@(test)
 doctor_reports_a_failed_restore :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	fixture := fixture_make(t)

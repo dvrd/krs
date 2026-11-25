@@ -318,6 +318,22 @@ command_update_doctor :: proc(env: ^Env, options: Options, names: []string) -> b
 		}
 	}
 
+	// The baseline tests what the collection holds, and a revert restores what
+	// the lockfile records: they must be the same version. vendor/ can lag
+	// behind the lockfile too.
+	for record in state.packages.packages {
+		if record.pinned {
+			continue
+		}
+
+		installed := manifest_find(&state.manifest, record.name)
+		if installed != nil && installed.linked == "" && installed.tag != record.tag {
+			fail(env, "%s: this project records %s but %s holds %s; run %s first so the tests see what is recorded", record.name, record.tag, state.shared, installed.tag, "krs install")
+			state_close(state)
+			return false
+		}
+	}
+
 	found, found_ok := update_candidates(state, query)
 	if !found_ok {
 		state_close(state)
@@ -374,6 +390,13 @@ command_update_doctor :: proc(env: ^Env, options: Options, names: []string) -> b
 	yes_options := options
 	yes_options.yes = true
 
+	// Before the baseline: its install command may change the lockfile.
+	path := path_join(env.project, PACKAGES_PATH)
+	before_bytes, read_err := os.read_entire_file(path, context.allocator)
+	if read_err != nil {
+		return fail(env, "cannot read %s: %v", path, read_err)
+	}
+
 	// Baseline: the tests must pass before anything changes.
 	info(env, "tests: %s", doctor_test_command(yes_options, vendored))
 	note(env, "if this run stops early, restore with: %s", DOCTOR_RECOVERY_VENDOR if vendored else DOCTOR_RECOVERY)
@@ -387,12 +410,6 @@ command_update_doctor :: proc(env: ^Env, options: Options, names: []string) -> b
 	}
 
 	// All at once.
-	path := path_join(env.project, PACKAGES_PATH)
-	before_bytes, read_err := os.read_entire_file(path, context.allocator)
-	if read_err != nil {
-		return fail(env, "cannot read %s: %v", path, read_err)
-	}
-
 	{
 		all_state := state_open(env, yes_options) or_return
 		applied := update_apply(all_state, candidates[:], yes_options)
@@ -402,14 +419,21 @@ command_update_doctor :: proc(env: ^Env, options: Options, names: []string) -> b
 		}
 	}
 
-	together := doctor_check(env, yes_options, root, vendored) or_return
+	kept := make([dynamic]Doctor_Verdict, context.temp_allocator)
+	broken := make([dynamic]Doctor_Verdict, context.temp_allocator)
+	together, together_ran := doctor_check(env, yes_options, root, vendored)
+	if !together_ran {
+		if !doctor_restore(env, yes_options, snapshot, before_bytes) {
+			return doctor_restore_failed(env, vendored, snapshot, kept[:], broken[:])
+		}
+		return false
+	}
+
 	if together.passed {
 		success(env, "%d upgrade(s) pass the tests", len(candidates))
 		return true
 	}
 
-	kept := make([dynamic]Doctor_Verdict, context.temp_allocator)
-	broken := make([dynamic]Doctor_Verdict, context.temp_allocator)
 	warn(env, "the upgrades together break the tests; trying each one alone")
 	if !doctor_restore(env, yes_options, snapshot, before_bytes) {
 		return doctor_restore_failed(env, vendored, snapshot, kept[:], broken[:])
@@ -427,7 +451,14 @@ command_update_doctor :: proc(env: ^Env, options: Options, names: []string) -> b
 			continue
 		}
 
-		alone := doctor_check(env, yes_options, root, vendored) or_return
+		alone, alone_ran := doctor_check(env, yes_options, root, vendored)
+		if !alone_ran {
+			if !doctor_restore(env, yes_options, round_snapshot, round_bytes) {
+				return doctor_restore_failed(env, vendored, round_snapshot, kept[:], broken[:])
+			}
+			return false
+		}
+
 		if alone.passed {
 			append(&kept, Doctor_Verdict{candidate = candidate})
 			continue
