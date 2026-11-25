@@ -13,6 +13,12 @@ Install Task, Odin, libgit2 1.2 or newer, SQLite, pkg-config, and the Git CLI.
 The tests use Git to create fixture repositories. The compiler's `shared/`
 directory must contain `kakunou`. Task reports the missing directory on startup.
 
+KRS pins `shared:kakunou` in its own `.krs/packages.json`. On a new machine,
+copy the pinned tag's `src/` into the compiler's `shared/kakunou/`. If you
+already have a `krs` binary, run `krs install` in this repository to install
+that release. CI runs `KRS_STRICT_TOOLCHAIN=1 task check` on macOS with the
+compiler recorded in `ODIN_VERSION`.
+
 `ODIN_VERSION` records the tested compiler as `dev-YYYY-MM:<full commit>`.
 Task warns if the running compiler differs. Set `KRS_STRICT_TOOLCHAIN=1`
 to make a mismatch fail the build.
