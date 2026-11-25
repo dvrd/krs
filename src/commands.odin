@@ -9,17 +9,33 @@ import "core:strings"
 
 USAGE_FORMAT :: `%[0]susage:%[1]s
   krs %[0]sinstall%[1]s [--root=<path>] [--frozen] [--repair] [--yes]
+      install the releases this project imports
   krs %[0]sstatus%[1]s [--root=<path>]
-  krs %[0]supdate%[1]s [<package>[@<tag>]] [--root=<path>] [--fetch] [--yes]
+      list what the Odin root holds for this project
+  krs %[0]supdate%[1]s [--root=<path>] [--fetch]
+      list newer releases of this project's packages
+  krs %[0]supdate%[1]s <package>[@<tag>] [--root=<path>] [--fetch] [--yes]
+      install the latest release of a package, or the one named
   krs %[0]supdate --all%[1]s [--root=<path>] [--fetch] [--yes]
-  krs %[0]sfetch%[1]s [<owner>/<repo>]
+      update every package to its highest compatible release
+  krs %[0]sfetch%[1]s
+      refresh the GitHub releases of the configured libraries
+  krs %[0]sfetch%[1]s <owner>/<repo>
+      select or refresh the releases of one GitHub repository
   krs %[0]slink%[1]s <package> [--root=<path>] [--yes]
+      use a checkout's live src/ in place of a release
   krs %[0]slink ls%[1]s [--root=<path>]
+      list the links and flag broken ones
   krs %[0]sunlink%[1]s <package> [--root=<path>] [--restore] [--yes]
+      remove a link; with --restore, install the recorded release
   krs %[0]srecover%[1]s
+      list interrupted file publications
   krs %[0]srecover abandon%[1]s <id> [--yes]
+      give up on one interrupted publication
   krs %[0]s--version%[1]s
+      print the version
   krs %[0]s--help%[1]s
+      print this text
 
   %[0]s--root=<path>%[1]s  work on the shared/ of the Odin root at <path>
   %[0]s--frozen%[1]s       install exactly what .krs/packages.json says, or fail
@@ -114,6 +130,23 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 		return EXIT_USAGE
 	}
 
+	if len(words) > 0 && words[0] == "fetch" {
+		flag := ""
+		switch {
+		case options.root != "":
+			flag = "--root"
+		case options.frozen:
+			flag = "--frozen"
+		case options.yes:
+			flag = "--yes"
+		}
+
+		if flag != "" {
+			fail(env, "%s does not apply to fetch", flag)
+			return EXIT_USAGE
+		}
+	}
+
 	if len(words) > 0 && words[0] == "recover" && options.root != "" {
 		fail(env, "--root does not apply to recover")
 		return EXIT_USAGE
@@ -141,9 +174,9 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 		ok = command_outdated(env, options)
 	case words[0] == "update" && len(words) == 2:
 		ok = command_update(env, options, words[1])
-	case words[0] == "fetch" && len(words) == 1 && options.root == "" && !options.frozen && !options.yes:
+	case words[0] == "fetch" && len(words) == 1:
 		ok = command_fetch_all(env)
-	case words[0] == "fetch" && len(words) == 2 && options.root == "" && !options.frozen && !options.yes:
+	case words[0] == "fetch" && len(words) == 2:
 		ok = command_fetch(env, words[1])
 	case words[0] == "link" && len(words) == 2 && words[1] == "ls":
 		ok = command_link_list(env, options)
