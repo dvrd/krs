@@ -67,6 +67,7 @@ Update_Options :: struct {
 	doctor:         bool, // `update -u --doctor`: test upgrades and keep the passing ones
 	doctor_test:    string, // shell command for the tests; "" means the default
 	doctor_install: string, // shell command run after each install; "" means none
+	doctor_timeout: i64, // seconds; 0 = DOCTOR_TIMEOUT
 	deep:          bool, // `update --deep`: every project under the current directory
 	package_files: [dynamic]string, // `update --package-file`: chosen projects' lockfiles
 }
@@ -120,7 +121,7 @@ update_flag_takes_value :: proc(flag: string) -> bool {
 	switch flag {
 	case "-t", "--target", "-f", "--filter", "-x", "--reject", "--filter-version", "--reject-version",
 	     "--format", "-e", "--error-level", "-l", "--loglevel", "--install", "--interactive-select",
-	     "-c", "--cooldown", "--doctor-test", "--doctor-install", "--package-file":
+	     "-c", "--cooldown", "--doctor-test", "--doctor-install", "--doctor-timeout", "--package-file":
 		return true
 	}
 	return false

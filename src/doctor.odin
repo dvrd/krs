@@ -2,7 +2,9 @@ package krs
 
 import "core:fmt"
 import "core:os"
+import "core:strconv"
 import "core:strings"
+import "core:time"
 
 // `krs update -u --doctor`: upgrade, run the project's tests, and keep only
 // the upgrades that pass. Every revert replays a snapshot of the lockfile
@@ -11,6 +13,8 @@ import "core:strings"
 DOCTOR_TEST_DEFAULT :: "odin test ."
 DOCTOR_TEST_VENDOR :: "odin test . -collection:shared=vendor"
 DOCTOR_OUTPUT_LINES :: 20 // lines of test output shown for a failure
+DOCTOR_TIMEOUT :: 30 * 60 // seconds a doctor command may run without --doctor-timeout
+DOCTOR_TIMEOUT_LIMIT :: 24 * 3600
 DOCTOR_RECOVERY :: "git checkout -- .krs/packages.json && krs install --yes"
 DOCTOR_RECOVERY_VENDOR :: "git checkout -- .krs/packages.json vendor && krs install --yes"
 
@@ -41,12 +45,58 @@ doctor_tail :: proc(text: string) -> string {
 	return trimmed[start + 1:]
 }
 
+// Seconds in a --doctor-timeout value: digits followed by s, m or h, from
+// 1s to 24h. Rejects everything else.
+doctor_timeout_seconds :: proc(text: string) -> (seconds: i64, ok: bool) {
+	if len(text) < 2 {
+		return 0, false
+	}
+
+	unit: i64
+	switch text[len(text) - 1] {
+	case 's':
+		unit = 1
+	case 'm':
+		unit = 60
+	case 'h':
+		unit = 3600
+	case:
+		return 0, false
+	}
+
+	// At most six digits, so the multiplication below cannot overflow.
+	digits := text[:len(text) - 1]
+	if len(digits) > 6 {
+		return 0, false
+	}
+
+	// Checked here because parse_i64 would accept a sign, 0x and underscores.
+	for character in transmute([]byte)digits {
+		if character < '0' || character > '9' {
+			return 0, false
+		}
+	}
+
+	number, parsed := strconv.parse_i64(digits, 10)
+	if !parsed || number == 0 {
+		return 0, false
+	}
+
+	seconds = number * unit
+	if seconds > DOCTOR_TIMEOUT_LIMIT {
+		return 0, false
+	}
+	return seconds, true
+}
+
 // Runs `command` with `/bin/sh -c` in the project directory, with
 // ODIN_ROOT set to `root`. `ok` is false when the process could not run at
-// all (not a test failure).
-doctor_command :: proc(env: ^Env, root, command: string) -> (run: Doctor_Run, ok: bool) {
+// all (not a test failure). A command still running after `seconds` is
+// killed and counts as failed; only /bin/sh is killed, not its children.
+doctor_command :: proc(env: ^Env, root, command: string, seconds: i64) -> (run: Doctor_Run, ok: bool) {
 	assert(root != "")
 	assert(command != "")
+	assert(seconds > 0 && seconds <= DOCTOR_TIMEOUT_LIMIT)
 
 	environment, _ := os.environ(context.temp_allocator)
 	child_environment := make([dynamic]string, context.temp_allocator)
@@ -79,7 +129,19 @@ doctor_command :: proc(env: ^Env, root, command: string) -> (run: Doctor_Run, ok
 		return run, fail(env, "cannot run %s: %v", command, start_err)
 	}
 
-	process_state, wait_err := os.process_wait(process)
+	process_state, wait_err := os.process_wait(process, time.Duration(seconds) * time.Second)
+	if wait_err == os.General_Error.Timeout {
+		progress_stop(env)
+		if kill_err := os.process_kill(process); kill_err != nil {
+			warn(env, "cannot stop the test command: %v", kill_err)
+		}
+
+		_, _ = os.process_wait(process)
+		run.passed = false
+		run.output = fmt.aprintf("timed out after %ds", seconds)
+		return run, true
+	}
+
 	progress_stop(env)
 	if wait_err != nil {
 		return run, fail(env, "cannot run %s: %v", command, wait_err)
@@ -107,14 +169,15 @@ doctor_test_command :: proc(options: Options, vendored: bool) -> string {
 
 // Runs the install command (when set), then the test command.
 doctor_check :: proc(env: ^Env, options: Options, root: string, vendored: bool) -> (run: Doctor_Run, ok: bool) {
+	seconds := options.update.doctor_timeout if options.update.doctor_timeout > 0 else DOCTOR_TIMEOUT
 	if options.update.doctor_install != "" {
-		installed := doctor_command(env, root, options.update.doctor_install) or_return
+		installed := doctor_command(env, root, options.update.doctor_install, seconds) or_return
 		if !installed.passed {
 			return installed, true
 		}
 	}
 
-	return doctor_command(env, root, doctor_test_command(options, vendored))
+	return doctor_command(env, root, doctor_test_command(options, vendored), seconds)
 }
 
 // A copy of the project's lockfile records and the file's bytes, taken

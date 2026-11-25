@@ -16,7 +16,7 @@ USAGE_FORMAT :: `%[0]susage:%[1]s
       list newer releases; filter with names, -f, -x
   krs %[0]supdate -u%[1]s [<package>[@<tag>]...] [--cooldown=<period>] [--deep] [--package-file=<p>] [options]
       write the chosen versions to .krs/packages.json and install them
-  krs %[0]supdate -u --doctor%[1]s [--doctor-test=<cmd>] [--doctor-install=<cmd>] [options]
+  krs %[0]supdate -u --doctor%[1]s [--doctor-test=<cmd>] [--doctor-install=<cmd>] [--doctor-timeout=<d>] [options]
       upgrade, run the tests and keep only the upgrades that pass
   krs %[0]supdate -i%[1]s [<package>...] [--interactive-select=<which>] [--root=<path>]
       choose which upgrades to take, then apply them
@@ -62,6 +62,7 @@ USAGE_FORMAT :: `%[0]susage:%[1]s
   %[0]s-d, --doctor%[1]s            after upgrading, run the tests; keep only upgrades that pass
   %[0]s--doctor-test%[1]s <cmd>     test command for --doctor (default: odin test .)
   %[0]s--doctor-install%[1]s <cmd>  command run after each install for --doctor (default: none)
+  %[0]s--doctor-timeout%[1]s <d>    stop a --doctor command after 30s, 10m, 2h... (default: 30m)
   %[0]s-t, --target%[1]s <t>        latest, greatest, newest, minor, patch or semver
   %[0]s-f, --filter%[1]s <p>        only names matching p (name, a,b, glob*, /regex/, !name)
   %[0]s-x, --reject%[1]s <p>        skip names matching p
@@ -120,7 +121,7 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 	update_flag := "" // the first update-only flag given, for the guard below
 	log_level: Maybe(Log_Level)
 	interactive_select_given := false
-	doctor_flag := "" // the first of --doctor-test and --doctor-install given
+	doctor_flag := "" // the first of --doctor-test, --doctor-install and --doctor-timeout given
 
 	for index := 0; index < len(arguments); index += 1 {
 		argument := arguments[index]
@@ -265,6 +266,17 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 			}
 		case flag == "--doctor-install":
 			options.update.doctor_install = value
+			if doctor_flag == "" {
+				doctor_flag = flag
+			}
+		case flag == "--doctor-timeout":
+			seconds, valid := doctor_timeout_seconds(value)
+			if !valid {
+				fail(env, "%s is not a timeout; use 30s, 10m or 2h", value)
+				return EXIT_USAGE
+			}
+
+			options.update.doctor_timeout = seconds
 			if doctor_flag == "" {
 				doctor_flag = flag
 			}

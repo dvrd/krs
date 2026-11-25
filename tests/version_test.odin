@@ -1861,6 +1861,24 @@ doctor_needs_a_passing_baseline :: proc(t: ^testing.T) {
 }
 
 @(test)
+doctor_times_out_and_reverts :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	release_beta_upgrade(&fixture)
+	before := packages_text(&fixture)
+
+	// `exec` makes the killed process the sleep itself, so nothing is left running.
+	test := fmt.tprintf("--doctor-test=if grep -q 'RELEASE :: \"v0.2.0\"' %s/beta/beta.odin; then exec sleep 30; fi", fixture.shared)
+	result := run(&fixture, "", "update", "-u", "--doctor", "--yes", "--doctor-timeout=1s", test)
+	testing.expectf(t, result.code == 1, "exit %d\nout: %s\nerr: %s", result.code, result.out, result.err)
+	expect_contains(&fixture, result.out, "timed out")
+	expect_release(&fixture, "beta", "v0.1.0")
+	testing.expect_value(t, packages_text(&fixture), before)
+}
+
+@(test)
 doctor_flags_are_checked :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	fixture := fixture_make(t)
@@ -1883,6 +1901,9 @@ doctor_flags_are_checked :: proc(t: ^testing.T) {
 		{{"update", "-u", "--doctor", "-j"}, "JSON output cannot be combined"},
 		{{"update", "-u", "-d", "--json-upgraded"}, "JSON output cannot be combined"},
 		{{"update", "-i", "--doctor"}, "--doctor and -i cannot be combined"},
+		{{"update", "-u", "--doctor", "--doctor-timeout=0s"}, "0s is not a timeout"},
+		{{"update", "-u", "--doctor", "--doctor-timeout=5"}, "5 is not a timeout"},
+		{{"update", "-u", "--doctor-timeout=1m"}, "--doctor-timeout needs --doctor"},
 	}
 	for misuse in cases {
 		result := run(&fixture, "", ..misuse.arguments)
