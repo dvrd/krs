@@ -1585,3 +1585,39 @@ cooldown_periods_are_checked :: proc(t: ^testing.T) {
 	testing.expect_value(t, result.code, krs.EXIT_USAGE)
 	expect_contains(&fixture, result.err, "only applies to update")
 }
+
+@(test)
+cooldown_without_it_offers_the_fresh_release :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	library_release_at(&fixture, "beta", "v1.0.0", COOLDOWN_OLD)
+	project_imports(&fixture, "beta")
+	expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
+	library_release_at(&fixture, "beta", "v1.0.1", "2001-02-01 00:00:00 +0000")
+	library_release(&fixture, "beta", "v1.1.0")
+
+	result := run(&fixture, "", "update")
+	expect_ok(&fixture, result)
+	expect_contains(&fixture, squeeze(result.out), "beta v1.0.0 -> v1.1.0")
+}
+
+@(test)
+cooldown_never_downgrades :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	library_release_at(&fixture, "beta", "v1.0.0", COOLDOWN_OLD)
+	library_release(&fixture, "beta", "v1.1.0")
+	project_imports(&fixture, "beta")
+	expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
+
+	result := run(&fixture, "", "update", "--cooldown", "7")
+	expect_ok(&fixture, result)
+	testing.expect(t, !strings.contains(squeeze(result.out), "-> v1.0.0"))
+
+	expect_ok(&fixture, run(&fixture, "", "update", "-u", "--cooldown", "7", "--yes"))
+	expect_release(&fixture, "beta", "v1.1.0")
+}

@@ -12,9 +12,9 @@ USAGE_FORMAT :: `%[0]susage:%[1]s
       install the releases this project imports
   krs %[0]sstatus%[1]s [--root=<path>]
       list what the Odin root holds for this project
-  krs %[0]supdate%[1]s [<package>[@<tag>]...] [options]
+  krs %[0]supdate%[1]s [<package>[@<tag>]...] [--cooldown=<period>] [options]
       list newer releases; filter with names, -f, -x
-  krs %[0]supdate -u%[1]s [<package>[@<tag>]...] [options]
+  krs %[0]supdate -u%[1]s [<package>[@<tag>]...] [--cooldown=<period>] [options]
       write the chosen versions to .krs/packages.json and install them
   krs %[0]supdate -i%[1]s [<package>...] [--interactive-select=<which>] [--root=<path>]
       choose which upgrades to take, then apply them
@@ -56,12 +56,13 @@ USAGE_FORMAT :: `%[0]susage:%[1]s
   %[0]s--pin%[1]s                   with -u: pin every chosen version
   %[0]s-i, --interactive%[1]s       choose upgrades before applying them
   %[0]s--interactive-select%[1]s    auto, none, patch, minor or all: what starts selected
+  %[0]s-c, --cooldown%[1]s <p>      ignore releases younger than this (7, 7d, 12h, 30m)
   %[0]s-t, --target%[1]s <t>        latest, greatest, newest, minor, patch or semver
   %[0]s-f, --filter%[1]s <p>        only names matching p (name, a,b, glob*, /regex/, !name)
   %[0]s-x, --reject%[1]s <p>        skip names matching p
   %[0]s--filter-version%[1]s <p>    only current versions matching p
   %[0]s--reject-version%[1]s <p>    skip current versions matching p
-  %[0]s--format%[1]s <v,...>        group, lines, time, repo, diff, installed-version; no-<v> removes
+  %[0]s--format%[1]s <v,...>        group, lines, time, repo, diff, installed-version, cooldown; no-<v> removes
   %[0]s-j, --json-all%[1]s          print the new .krs/packages.json as JSON
   %[0]s--json-upgraded%[1]s         print the upgrades as JSON
   %[0]s--json-deps%[1]s             print the new package list as JSON
@@ -177,7 +178,7 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 			for item in strings.split(value, ",", context.temp_allocator) {
 				format, enabled, valid := update_format_parse(item)
 				if !valid {
-					fail(env, "%s is not a format; use group, lines, time, repo, diff or installed-version", item)
+					fail(env, "%s is not a format; use group, lines, time, repo, diff, installed-version or cooldown", item)
 					return EXIT_USAGE
 				}
 
@@ -218,6 +219,13 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 				return EXIT_USAGE
 			}
 			options.update.install_given = true
+		case flag == "-c" || flag == "--cooldown":
+			seconds, valid := cooldown_seconds(value)
+			if !valid {
+				fail(env, "%s is not a cooldown period; use a number of days, or 7d, 12h or 30m", value)
+				return EXIT_USAGE
+			}
+			options.update.cooldown = seconds
 		case flag == "--pin":
 			options.update.pin = true
 		case flag == "-i" || flag == "--interactive":
@@ -512,7 +520,7 @@ command_check :: proc(env: ^Env, options: Options, names: []string) -> bool {
 	// `-e 2` lets CI fail when an upgrade is available; it is not an error.
 	if options.update.error_level == 2 {
 		for candidate in candidates {
-			if !candidate.pinned {
+			if !candidate.pinned && candidate_upgrades(candidate) {
 				return false
 			}
 		}

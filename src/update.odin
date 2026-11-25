@@ -26,6 +26,7 @@ Update_Format :: enum {
 	Repo,
 	Diff,
 	Installed_Version,
+	Cooldown,
 }
 
 Update_Json :: enum {
@@ -60,6 +61,7 @@ Update_Options :: struct {
 	install:        Install_Mode, // `update -u --install`: when to install
 	install_given:  bool, // --install was passed (a zero value is not enough)
 	pin:            bool, // `update -u --pin`: pin every chosen version
+	cooldown:       i64, // seconds; 0 = off
 	interactive:        bool, // `update -i`: choose upgrades before applying them
 	interactive_select: Interactive_Select, // which upgrades start selected
 }
@@ -96,6 +98,7 @@ UPDATE_FORMAT_NAMES :: [Update_Format]string {
 	.Repo              = "repo",
 	.Diff              = "diff",
 	.Installed_Version = "installed-version",
+	.Cooldown          = "cooldown",
 }
 
 LOG_LEVEL_NAMES :: [Log_Level]string {
@@ -111,7 +114,8 @@ LOG_LEVEL_NAMES :: [Log_Level]string {
 update_flag_takes_value :: proc(flag: string) -> bool {
 	switch flag {
 	case "-t", "--target", "-f", "--filter", "-x", "--reject", "--filter-version", "--reject-version",
-	     "--format", "-e", "--error-level", "-l", "--loglevel", "--install", "--interactive-select":
+	     "--format", "-e", "--error-level", "-l", "--loglevel", "--install", "--interactive-select",
+	     "-c", "--cooldown":
 		return true
 	}
 	return false
@@ -179,6 +183,68 @@ Update_Candidate :: struct {
 	group:       Update_Group,
 	pinned:      bool,
 	chosen_time: i64, // Unix seconds; 0 when not loaded
+	held_by_cooldown: string, // the tag the target would pick without --cooldown, when it was too new; "" otherwise
+	held_time:   i64, // Unix seconds of held_by_cooldown; 0 when unknown
+}
+
+// A candidate that would actually move the package.
+candidate_upgrades :: proc(candidate: Update_Candidate) -> bool {
+	return candidate.chosen != candidate.current
+}
+
+// The candidates that would move a package.
+candidates_upgrading :: proc(candidates: []Update_Candidate) -> [dynamic]Update_Candidate {
+	upgrading := make([dynamic]Update_Candidate, context.temp_allocator)
+	for candidate in candidates {
+		if candidate_upgrades(candidate) {
+			append(&upgrading, candidate)
+		}
+	}
+	return upgrading
+}
+
+COOLDOWN_LIMIT :: 3650 * 86400
+
+// Seconds in a --cooldown period: a plain number of days, or a number with
+// d, h or m. Rejects zero, negatives and anything else.
+cooldown_seconds :: proc(text: string) -> (seconds: i64, ok: bool) {
+	digits := text
+	unit := i64(86400)
+	if len(text) > 0 {
+		switch text[len(text) - 1] {
+		case 'd':
+			digits = text[:len(text) - 1]
+		case 'h':
+			digits = text[:len(text) - 1]
+			unit = 3600
+		case 'm':
+			digits = text[:len(text) - 1]
+			unit = 60
+		}
+	}
+
+	// At most nine digits, so the multiplication below cannot overflow.
+	if len(digits) == 0 || len(digits) > 9 {
+		return 0, false
+	}
+
+	// Checked here because parse_i64 would accept a sign, 0x and underscores.
+	for character in transmute([]byte)digits {
+		if character < '0' || character > '9' {
+			return 0, false
+		}
+	}
+
+	number, parsed := strconv.parse_i64(digits, 10)
+	if !parsed || number == 0 {
+		return 0, false
+	}
+
+	seconds = number * unit
+	if seconds > COOLDOWN_LIMIT {
+		return 0, false
+	}
+	return seconds, true
 }
 
 Update_Query :: struct {
@@ -189,6 +255,7 @@ Update_Query :: struct {
 	global:         bool,
 	cooldown:       i64, // seconds; 0 = off (plan 027 sets it)
 	need_times:     bool, // .Newest, --format time, or cooldown
+	report_held:    bool, // --format cooldown: also emit packages the cooldown holds in place
 }
 
 Update_Pattern :: struct {
@@ -324,7 +391,9 @@ update_query_make :: proc(env: ^Env, options: Options, names: []string) -> (quer
 	query = Update_Query {
 		target     = options.update.target,
 		global     = options.update.global,
-		need_times = options.update.target == .Newest || .Time in options.update.format,
+		need_times = options.update.target == .Newest || .Time in options.update.format || options.update.cooldown > 0,
+		cooldown   = options.update.cooldown,
+		report_held = options.update.cooldown > 0 && .Cooldown in options.update.format,
 	}
 	defer if !ok {
 		update_query_destroy(query)
@@ -424,8 +493,10 @@ update_group :: proc(current, chosen: Version) -> Update_Group {
 }
 
 // The tag the target picks among the repository's tags, or "" when none
-// qualifies. `.Newest` needs the tag times loaded.
-update_choose :: proc(repository: ^Repository, current: Version, target: Update_Target) -> string {
+// qualifies. `.Newest` and a non-zero `threshold` need the tag times loaded.
+// With a threshold, only tags whose commit time is known and not later than
+// it (Unix seconds) qualify.
+update_choose :: proc(repository: ^Repository, current: Version, target: Update_Target, threshold: i64 = 0) -> string {
 	chosen := ""
 	chosen_version: Version
 	chosen_time: i64
@@ -443,6 +514,13 @@ update_choose :: proc(repository: ^Repository, current: Version, target: Update_
 			}
 		case .Semver:
 			if version_compatibility(current, version) != .Compatible {
+				continue
+			}
+		}
+
+		if threshold > 0 {
+			tag_time, found := repository.tag_times[tag]
+			if !found || tag_time == 0 || tag_time > threshold {
 				continue
 			}
 		}
@@ -519,7 +597,7 @@ update_candidates :: proc(state: ^State, query: Update_Query) -> (candidates: [d
 			continue
 		}
 
-		if query.need_times || query.target == .Newest {
+		if query.need_times || query.target == .Newest || query.cooldown > 0 {
 			if !repository_load_times(state, &repository) {
 				unavailable += 1
 				continue
@@ -527,6 +605,8 @@ update_candidates :: proc(state: ^State, query: Update_Query) -> (candidates: [d
 		}
 
 		chosen := ""
+		held := ""
+		held_time: i64
 		named := query.name_tags[entry.name]
 		if named != "" {
 			// Only an explicit tag may choose a lower one.
@@ -542,19 +622,46 @@ update_candidates :: proc(state: ^State, query: Update_Query) -> (candidates: [d
 			chosen = named
 		} else {
 			chosen = update_choose(&repository, current, query.target)
-			if chosen == "" {
-				continue
+			if query.cooldown > 0 {
+				wanted := chosen
+				chosen = ""
+				threshold := time.time_to_unix(time.now()) - query.cooldown
+				eligible := update_choose(&repository, current, query.target, threshold)
+				if eligible != "" {
+					eligible_version, _ := parse_tag(eligible)
+					if version_compare(eligible_version, current) == .Higher {
+						chosen = eligible
+					}
+				}
+
+				if wanted != "" && wanted != chosen {
+					wanted_version, _ := parse_tag(wanted)
+					if version_compare(wanted_version, current) == .Higher {
+						held = wanted
+						held_time = repository.tag_times[wanted]
+						if held_time == 0 {
+							note(state.env, "%s %s has no commit date; --cooldown skips it", entry.name, wanted)
+						}
+					}
+				}
+			} else if chosen != "" {
+				chosen_version, _ := parse_tag(chosen)
+				if version_compare(chosen_version, current) != .Higher {
+					chosen = ""
+				}
 			}
 
-			chosen_version, _ := parse_tag(chosen)
-			if version_compare(chosen_version, current) != .Higher {
-				continue
+			if chosen == "" {
+				// Nothing moves; a held package is still reported for --format cooldown.
+				if held == "" || !query.report_held {
+					continue
+				}
+				chosen = entry.tag
 			}
 		}
 
 		chosen_version, chosen_ok := parse_tag(chosen)
 		assert(chosen_ok)
-		assert(chosen != entry.tag)
 		candidate := Update_Candidate {
 			name      = entry.name,
 			source    = entry.source,
@@ -563,6 +670,8 @@ update_candidates :: proc(state: ^State, query: Update_Query) -> (candidates: [d
 			installed = installed,
 			group     = update_group(current, chosen_version),
 			pinned    = entry.pinned,
+			held_by_cooldown = held,
+			held_time = held_time,
 		}
 		if query.need_times {
 			candidate.chosen_time = repository.tag_times[chosen]
@@ -599,7 +708,8 @@ UPDATE_GROUP_ORDER :: [?]Update_Group{.Patch, .Minor, .Major_Zero, .Major}
 
 // Prints the candidates of `krs update`, grouped by the kind of change
 // unless `--format no-group` is given.
-update_print :: proc(env: ^Env, candidates: []Update_Candidate, options: Update_Options) {
+update_print :: proc(env: ^Env, all: []Update_Candidate, options: Update_Options) {
+	candidates := candidates_upgrading(all)[:]
 	if .Lines in options.format {
 		// Only `name@tag` lines, for piping; nothing else reaches stdout.
 		for candidate in candidates {
@@ -607,6 +717,7 @@ update_print :: proc(env: ^Env, candidates: []Update_Candidate, options: Update_
 				fmt.wprintfln(env.out, "%s@%s", printable(candidate.name), printable(candidate.chosen))
 			}
 		}
+		update_print_held(env, all, options.format)
 		return
 	}
 
@@ -660,12 +771,43 @@ update_print :: proc(env: ^Env, candidates: []Update_Candidate, options: Update_
 		info(env, "run %s to upgrade %s", "krs update -u", PACKAGES_PATH)
 	}
 
+	update_print_held(env, all, options.format)
+
 	if len(candidates) == 0 {
 		if options.target == .Latest || options.target == .Greatest {
 			success(env, "every package of this project is at its highest tag")
 		} else {
 			success(env, "no upgrades for --target %s", targets[options.target])
 		}
+	}
+}
+
+// With --format cooldown, one line per package the cooldown holds back.
+update_print_held :: proc(env: ^Env, candidates: []Update_Candidate, format: bit_set[Update_Format]) {
+	if .Cooldown not_in format {
+		return
+	}
+
+	now := time.time_to_unix(time.now())
+	for candidate in candidates {
+		if candidate.held_by_cooldown == "" {
+			continue
+		}
+
+		age := "age unknown"
+		if candidate.held_time != 0 {
+			days := max(now - candidate.held_time, 0) / 86400
+			switch days {
+			case 0:
+				age = "released today"
+			case 1:
+				age = "released 1 day ago"
+			case:
+				age = fmt.tprintf("released %d days ago", days)
+			}
+		}
+		say(env, "  %v %s %s %v %s, %v", paint(env, ANSI_YELLOW, "cooldown"), candidate.name, candidate.current,
+			paint(env, ANSI_DIM, "skips"), candidate.held_by_cooldown, paint(env, ANSI_DIM, age))
 	}
 }
 
@@ -709,8 +851,9 @@ update_print_row :: proc(env: ^Env, candidate: Update_Candidate, format: bit_set
 
 // Prints one JSON document: the upgrades as {name: tag}, or the
 // .krs/packages.json that `krs update -u` would write (or only its list).
-update_print_json :: proc(state: ^State, candidates: []Update_Candidate, mode: Update_Json) -> bool {
+update_print_json :: proc(state: ^State, all: []Update_Candidate, mode: Update_Json) -> bool {
 	assert(mode != .None)
+	candidates := candidates_upgrading(all)[:]
 	env := state.env
 	value: any
 	upgraded: map[string]string
@@ -853,7 +996,9 @@ command_update_upgrade :: proc(env: ^Env, options: Options, names: []string) -> 
 		}
 	}
 
-	candidates := update_candidates(state, query) or_return
+	found_candidates := update_candidates(state, query) or_return
+	// A package the cooldown holds in place has nothing to apply.
+	candidates := candidates_upgrading(found_candidates[:])
 	if options.update.pin {
 		// A named pinned package moves and is pinned again at the new version.
 		for &candidate in candidates {
@@ -919,7 +1064,7 @@ interactive_digits :: proc(text: string) -> bool {
 update_choose_interactive :: proc(env: ^Env, candidates: []Update_Candidate, which: Interactive_Select) -> (chosen: [dynamic]Update_Candidate, ok: bool) {
 	offered := make([dynamic]Update_Candidate, context.temp_allocator)
 	for candidate in candidates {
-		if !candidate.pinned {
+		if !candidate.pinned && candidate_upgrades(candidate) {
 			append(&offered, candidate)
 		}
 	}

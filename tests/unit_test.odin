@@ -266,3 +266,24 @@ printable_escapes_control_characters :: proc(t: ^testing.T) {
 	testing.expect(t, !strings.contains(text, "bad\x1b"))
 	testing.expect(t, strings.contains(text, krs.ANSI_GREEN + "ok" + krs.ANSI_RESET))
 }
+
+@(test)
+cooldown_periods_parse :: proc(t: ^testing.T) {
+	for text in ([]string{"7", "7d"}) {
+		seconds, ok := krs.cooldown_seconds(text)
+		testing.expect(t, ok)
+		testing.expect_value(t, seconds, 604800)
+	}
+
+	seconds, ok := krs.cooldown_seconds("12h")
+	testing.expect(t, ok)
+	testing.expect_value(t, seconds, 43200)
+	seconds, ok = krs.cooldown_seconds("30m")
+	testing.expect(t, ok)
+	testing.expect_value(t, seconds, 1800)
+
+	for text in ([]string{"0", "", "d", "7x", "99999", "87601h", "-7", "+7", "0x7", "7D"}) {
+		_, valid := krs.cooldown_seconds(text)
+		testing.expectf(t, !valid, "%q should be rejected", text)
+	}
+}
