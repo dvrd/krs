@@ -293,3 +293,40 @@ ssh_clone_satisfies_a_pin_recorded_over_https :: proc(t: ^testing.T) {
 	expect_contains(&fixture, read_file(krs.path_join(other_root, "shared/beta/beta.odin")), "RELEASE :: \"v1.0.0\"")
 	expect_contains(&fixture, packages_text(&fixture), "https://github.com/dvrd/beta.git")
 }
+
+@(test)
+fetch_without_arguments_refreshes_every_lib :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	github_fixture_release(&fixture, "dvrd", "beta", "v1.0.0")
+	github_fixture_release(&fixture, "dvrd", "gamma", "v1.0.0")
+	write_file(t, krs.path_join(fixture.home, krs.CONFIG_PATH),
+		`{"libs":{"beta":{"source":"github","target":"dvrd/beta"},"gamma":{"source":"github","target":"dvrd/gamma"}}}`)
+	expect_ok(&fixture, run(&fixture, "", "fetch"))
+	beta := krs.path_join(fixture.home, ".local/shared/krs/repos/github/dvrd/beta")
+	testing.expect(t, os.is_directory(beta))
+	testing.expect(t, os.is_directory(krs.path_join(fixture.home, ".local/shared/krs/repos/github/dvrd/gamma")))
+
+	second := github_fixture_release(&fixture, "dvrd", "beta", "v1.1.0")
+	expect_ok(&fixture, run(&fixture, "", "fetch"))
+	testing.expect_value(t, git(t, beta, "rev-parse", "refs/tags/v1.1.0"), second)
+}
+
+@(test)
+fetch_without_arguments_reports_bad_entries :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	no_libs := run(&fixture, "", "fetch")
+	expect_ok(&fixture, no_libs)
+	expect_contains(&fixture, no_libs.out, "nothing to fetch")
+
+	github_fixture_release(&fixture, "dvrd", "beta", "v1.0.0")
+	write_file(t, krs.path_join(fixture.home, krs.CONFIG_PATH),
+		`{"libs":{"beta":{"source":"github","target":"dvrd/beta"},"bad":{"source":"gitlab","target":"dvrd/bad"}}}`)
+	expect_failure(&fixture, run(&fixture, "", "fetch"), "could not fetch 1 of 2")
+	testing.expect(t, os.is_directory(krs.path_join(fixture.home, ".local/shared/krs/repos/github/dvrd/beta")))
+}

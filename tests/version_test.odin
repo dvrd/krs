@@ -919,3 +919,105 @@ dependency_pins_with_invalid_fields_are_refused :: proc(t: ^testing.T) {
 		expect_failure(&fixture, run(&fixture, "", "install", "--yes"), row.expected)
 	}
 }
+
+@(test)
+update_fetch_sees_new_github_releases :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	github_fixture_release(&fixture, "dvrd", "project-kessel", "v1.0.0")
+	project_imports(&fixture, "kessel")
+	write_file(t, krs.path_join(fixture.home, krs.CONFIG_PATH),
+		`{"libs":{"kessel":{"source":"github","target":"dvrd/project-kessel"}}}`)
+	expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
+
+	github_fixture_release(&fixture, "dvrd", "project-kessel", "v1.1.0")
+	plain := run(&fixture, "", "update")
+	expect_ok(&fixture, plain)
+	testing.expect(t, !strings.contains(plain.out, "v1.1.0"))
+
+	fetched := run(&fixture, "", "update", "--fetch")
+	expect_ok(&fixture, fetched)
+	expect_contains(&fixture, fetched.out, "kessel v1.0.0 -> v1.1.0 (compatible)")
+}
+
+@(test)
+update_all_takes_compatible_tags_only :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	library_release(&fixture, "beta", "v0.4.0")
+	library_release(&fixture, "gamma", "v0.1.0")
+	project_imports(&fixture, "beta", "gamma")
+	expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
+	library_release(&fixture, "beta", "v0.4.1")
+	library_release(&fixture, "beta", "v0.5.0")
+	library_release(&fixture, "gamma", "v0.1.1")
+
+	expect_failure(&fixture, run(&fixture, "", "update", "--all"), "confirmation is needed")
+	expect_release(&fixture, "beta", "v0.4.0")
+
+	result := run(&fixture, "", "update", "--all", "--yes")
+	expect_ok(&fixture, result)
+	expect_release(&fixture, "beta", "v0.4.1")
+	expect_release(&fixture, "gamma", "v0.1.1")
+	expect_contains(&fixture, result.out, "beta v0.5.0 is available")
+}
+
+@(test)
+update_flags_are_rejected_elsewhere :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	all := run(&fixture, "", "install", "--all")
+	testing.expect_value(t, all.code, krs.EXIT_USAGE)
+	expect_contains(&fixture, all.err, "--all only applies to update without a package")
+	fetch := run(&fixture, "", "install", "--fetch")
+	testing.expect_value(t, fetch.code, krs.EXIT_USAGE)
+	expect_contains(&fixture, fetch.err, "--fetch only applies to update")
+	package_all := run(&fixture, "", "update", "beta", "--all")
+	testing.expect_value(t, package_all.code, krs.EXIT_USAGE)
+	expect_contains(&fixture, package_all.err, "--all only applies to update without a package")
+}
+
+@(test)
+update_all_moves_a_stale_project_pin :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	other := fixture
+	other.project = krs.path_join(fixture.base, "other-app")
+	os.make_directory_all(other.project)
+
+	library_release(&fixture, "beta", "v0.4.0")
+	project_imports(&fixture, "beta")
+	project_imports(&other, "beta")
+	expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
+	expect_ok(&other, run(&other, "", "install", "--yes"))
+	library_release(&fixture, "beta", "v0.4.1")
+	expect_ok(&fixture, run(&fixture, "", "update", "beta", "--yes"))
+
+	expect_ok(&other, run(&other, "", "update", "--all", "--yes"))
+	expect_contains(&other, read_file(krs.path_join(other.project, krs.PACKAGES_PATH)), "\"tag\": \"v0.4.1\"")
+}
+
+@(test)
+update_all_changes_nothing_when_a_package_cannot_be_checked :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	library_release(&fixture, "beta", "v0.4.0")
+	library_release(&fixture, "gamma", "v0.1.0")
+	project_imports(&fixture, "beta", "gamma")
+	expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
+	library_release(&fixture, "gamma", "v0.1.1")
+	os.remove_all(krs.path_join(fixture.sources, "beta"))
+
+	expect_failure(&fixture, run(&fixture, "", "update", "--all", "--yes"), "nothing was changed")
+	expect_release(&fixture, "gamma", "v0.1.0")
+}

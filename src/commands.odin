@@ -10,8 +10,9 @@ import "core:strings"
 USAGE_FORMAT :: `%[0]susage:%[1]s
   krs %[0]sinstall%[1]s [--root=<path>] [--frozen] [--repair] [--yes]
   krs %[0]sstatus%[1]s [--root=<path>]
-  krs %[0]supdate%[1]s [<package>[@<tag>]] [--root=<path>] [--yes]
-  krs %[0]sfetch%[1]s <owner>/<repo>
+  krs %[0]supdate%[1]s [<package>[@<tag>]] [--root=<path>] [--fetch] [--yes]
+  krs %[0]supdate --all%[1]s [--root=<path>] [--fetch] [--yes]
+  krs %[0]sfetch%[1]s [<owner>/<repo>]
   krs %[0]slink%[1]s <package> [--root=<path>] [--yes]
   krs %[0]slink ls%[1]s [--root=<path>]
   krs %[0]sunlink%[1]s <package> [--root=<path>] [--restore] [--yes]
@@ -24,6 +25,8 @@ USAGE_FORMAT :: `%[0]susage:%[1]s
   %[0]s--frozen%[1]s       install exactly what .krs/packages.json says, or fail
   %[0]s--repair%[1]s       reinstall packages whose installed files were changed
   %[0]s--restore%[1]s      after unlink, install the recorded release in its place
+  %[0]s--fetch%[1]s        before checking, refresh the GitHub releases of the packages
+  %[0]s--all%[1]s          update every package to its highest compatible tag
   %[0]s--yes%[1]s          do not ask before writing
 `
 
@@ -72,6 +75,10 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 			options.restore = true
 		case argument == "--repair":
 			options.repair = true
+		case argument == "--fetch":
+			options.fetch = true
+		case argument == "--all":
+			options.all = true
 		case strings.has_prefix(argument, "--root="):
 			options.root = argument[len("--root="):]
 		case strings.has_prefix(argument, "-"):
@@ -89,6 +96,16 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 
 	if options.repair && (len(words) == 0 || words[0] != "install") {
 		fail(env, "--repair only applies to install")
+		return EXIT_USAGE
+	}
+
+	if options.fetch && (len(words) == 0 || words[0] != "update") {
+		fail(env, "--fetch only applies to update")
+		return EXIT_USAGE
+	}
+
+	if options.all && (len(words) != 1 || words[0] != "update") {
+		fail(env, "--all only applies to update without a package")
 		return EXIT_USAGE
 	}
 
@@ -118,10 +135,14 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 		ok = command_install(env, options)
 	case words[0] == "status" && len(words) == 1:
 		ok = command_status(env, options)
+	case words[0] == "update" && len(words) == 1 && options.all:
+		ok = command_update_all(env, options)
 	case words[0] == "update" && len(words) == 1:
 		ok = command_outdated(env, options)
 	case words[0] == "update" && len(words) == 2:
 		ok = command_update(env, options, words[1])
+	case words[0] == "fetch" && len(words) == 1 && options.root == "" && !options.frozen && !options.yes:
+		ok = command_fetch_all(env)
 	case words[0] == "fetch" && len(words) == 2 && options.root == "" && !options.frozen && !options.yes:
 		ok = command_fetch(env, words[1])
 	case words[0] == "link" && len(words) == 2 && words[1] == "ls":
@@ -173,6 +194,10 @@ command_outdated :: proc(env: ^Env, options: Options) -> bool {
 			continue
 		}
 
+		if options.fetch {
+			refresh_package_cache(state, record.name, record.source)
+		}
+
 		repository, ok := repository_find(state, record.name, "", record.source)
 		if !ok {
 			warn(env, "cannot check %s: no usable repository", record.name)
@@ -207,6 +232,94 @@ command_outdated :: proc(env: ^Env, options: Options) -> bool {
 	}
 
 	return true
+}
+
+// `krs update --all`: moves every package of this project to its highest
+// compatible tag in one plan. Breaking tags are listed, never taken. Changes
+// nothing when any package cannot be checked.
+command_update_all :: proc(env: ^Env, options: Options) -> bool {
+	if options.frozen {
+		return fail(env, "--frozen does not apply to update")
+	}
+
+	state := state_open(env, options) or_return
+	defer state_close(state)
+	unavailable := 0
+	queued := 0
+
+	for record in state.manifest.packages {
+		pin := packages_find(&state.packages, record.name)
+		if record.linked != "" || pin == nil {
+			continue
+		}
+
+		if options.fetch {
+			refresh_package_cache(state, record.name, record.source)
+		}
+
+		repository, found := repository_find(state, record.name, "", record.source)
+		if !found {
+			warn(env, "cannot check %s: no usable repository", record.name)
+			unavailable += 1
+			continue
+		}
+
+		current, current_ok := parse_tag(pin.tag)
+		if !current_ok {
+			warn(env, "cannot check %s: invalid installed tag %s", record.name, pin.tag)
+			unavailable += 1
+			continue
+		}
+
+		chosen := ""
+		chosen_version: Version
+		for tag in repository.tags {
+			version, valid := parse_tag(tag)
+			if !valid || version_compatibility(current, version) != .Compatible {
+				continue
+			}
+
+			if chosen == "" || version_compare(version, chosen_version) == .Higher {
+				chosen = tag
+				chosen_version = version
+			}
+		}
+
+		highest, _ := highest_tag(repository.tags[:])
+		highest_version, highest_ok := parse_tag(highest)
+		if highest_ok && version_compare(highest_version, current) == .Higher &&
+		   version_compatibility(current, highest_version) != .Compatible {
+			note(env, "%s %s is available; run %s to take it", record.name, highest, fmt.tprintf("krs update %s", record.name))
+		}
+
+		if chosen == "" {
+			continue
+		}
+
+		higher := version_compare(chosen_version, current) == .Higher
+		stale := chosen == record.tag && pin.tag != record.tag
+		if !higher && !stale {
+			continue
+		}
+
+		say_version_change(env, record.name, pin.tag, chosen, .Compatible)
+		append(&state.queue, Request{name = record.name, tag = chosen, source = record.source, by = "krs update --all", kind = .Update, recorded = true, source_trusted = true})
+		queued += 1
+	}
+
+	if unavailable > 0 {
+		return fail(env, "could not check %d package(s); nothing was changed", unavailable)
+	}
+
+	if queued == 0 {
+		success(env, "every package of this project is at its highest compatible tag")
+		return true
+	}
+
+	plan_discover(state) or_return
+	plan_drain(state) or_return
+
+	return plan_apply(state)
 }
 
 // Lists the installed packages whose own records name another version.
@@ -271,6 +384,10 @@ command_update :: proc(env: ^Env, options: Options, target: string) -> bool {
 		if !slice.contains(imports[:], name) {
 			return fail(env, "%s is not used by this project; run krs update in a project that imports it", name)
 		}
+	}
+
+	if options.fetch {
+		refresh_package_cache(state, name, record.source)
 	}
 
 	repository, found := repository_find(state, name, tag, record.source)

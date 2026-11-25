@@ -11,6 +11,8 @@ Options :: struct {
 	yes:     bool,
 	restore: bool, // `unlink` installs the recorded release in place of the link
 	repair:  bool, // `install` reinstalls packages whose files no longer match
+	fetch:   bool, // `update` refreshes GitHub caches before checking
+	all:     bool, // `update` moves every package to its highest compatible tag
 }
 
 Action :: enum {
