@@ -109,3 +109,25 @@ package_file_matches :: proc(pattern, lockfile: string) -> bool {
 
 	return at_pattern == len(wanted)
 }
+
+// `words` (the command and its package names) reduced to the names this
+// project records or imports; a `name@tag` word stays intact.
+deep_used_words :: proc(env: ^Env, words: []string) -> (used: []string, ok: bool) {
+	packages := load_packages(env) or_return
+	imports, _ := scan_directory_imports(env.project, path_base(env.project), true)
+	kept := make([dynamic]string, context.temp_allocator)
+	append(&kept, words[0])
+
+	for word in words[1:] {
+		name := word
+		if at := strings.index_byte(word, '@'); at >= 0 {
+			name = word[:at]
+		}
+
+		if packages_find(&packages, name) != nil || slice.contains(imports[:], name) {
+			append(&kept, word)
+		}
+	}
+
+	return kept[:], true
+}

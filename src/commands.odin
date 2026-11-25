@@ -558,7 +558,22 @@ command_update_deep :: proc(env: ^Env, options: Options, words: []string) -> boo
 		say(env, "%v %s", paint(env, ANSI_CYAN, "project"), relative)
 		project_env := env^
 		project_env.project = project
-		if !update_dispatch(&project_env, options, words) {
+		project_words := words
+		if len(words) > 1 {
+			used, usable := deep_used_words(&project_env, words)
+			if !usable {
+				all_ok = false
+				continue
+			}
+
+			project_words = used
+			if len(project_words) == 1 {
+				info(env, "%s: none of the named packages are used here", relative)
+				continue
+			}
+		}
+
+		if !update_dispatch(&project_env, options, project_words) {
 			all_ok = false
 		}
 	}

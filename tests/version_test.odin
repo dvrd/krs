@@ -1968,3 +1968,21 @@ update_deep_flags_are_checked :: proc(t: ^testing.T) {
 		expect_contains(&fixture, result.err, misuse.message)
 	}
 }
+
+@(test)
+update_deep_skips_names_a_project_does_not_use :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	gen := deep_fixture(&fixture)
+	other := krs.path_join(gen, "../other")
+	write_file(t, krs.path_join(other, "main.odin"), "package main\n\nimport \"shared:gamma\"\n")
+	write_file(t, krs.path_join(other, krs.PACKAGES_PATH), "{\"format\": 1, \"packages\": []}\n")
+	before := read_file(krs.path_join(other, krs.PACKAGES_PATH))
+	result := run(&fixture, "", "update", "-u", "beta", "--deep", "--yes")
+	expect_ok(&fixture, result)
+	expect_contains(&fixture, packages_text(&fixture), "v1.1.0")
+	testing.expect_value(t, read_file(krs.path_join(other, krs.PACKAGES_PATH)), before)
+	expect_contains(&fixture, result.out, "none of the named packages are used here")
+}
