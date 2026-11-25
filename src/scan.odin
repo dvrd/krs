@@ -127,8 +127,8 @@ scanner_next :: proc(scanner: ^Scanner) -> Token {
 	case c == '"' || c == '`':
 		literal, closed := scanner_quoted(scanner, c)
 		if closed {
-			value, _, valid := strconv.unquote_string(literal)
-			if valid {
+			value, _, unquote_err := strconv.unquote_string(literal)
+			if unquote_err == nil {
 				return {kind = .String, text = value}
 			}
 		}
