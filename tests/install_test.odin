@@ -402,3 +402,53 @@ config_ignores_retired_keys :: proc(t: ^testing.T) {
 	expect_ok(&fixture, result)
 	testing.expect(t, !strings.contains(result.out, "no settings"), result.out)
 }
+
+@(test)
+install_skips_symbolic_links_in_a_release :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	path := repository_make(&fixture, "alpha")
+	write_file(t, krs.path_join(path, "LICENSE"), "licence text\n")
+	write_file(t, krs.path_join(path, "data/runtime.js"), "export const released = true\n")
+	write_file(t, krs.path_join(path, "src/alpha.odin"), "package alpha\n\nRUNTIME :: #load(\"assets/runtime.js\", string)\n")
+	err1 := os.symlink("../LICENSE", krs.path_join(path, "src/LICENSE"))
+	os.make_directory_all(krs.path_join(path, "src/assets"))
+	err2 := os.symlink("../../data/runtime.js", krs.path_join(path, "src/assets/runtime.js"))
+	testing.expect(t, err1 == nil && err2 == nil)
+	repository_release(&fixture, "alpha", "v0.1.0")
+
+	project_imports(&fixture, "alpha")
+	result := run(&fixture, "", "install", "--yes")
+	expect_ok(&fixture, result)
+
+	testing.expect_value(t, read_file(krs.path_join(fixture.shared, "alpha/LICENSE")), "licence text\n")
+	testing.expect(t, !os.exists(krs.path_join(fixture.shared, "alpha/assets/runtime.js")))
+	expect_contains(&fixture, result.out, "which is a symbolic link in the release")
+}
+
+@(test)
+install_reports_a_load_into_a_submodule :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	library_release(&fixture, "alpha", "v0.1.0")
+	path := krs.path_join(fixture.sources, "alpha")
+	first := git(t, path, "rev-parse", "HEAD")
+
+	// A gitlink without a real submodule. `repository_release` would stage the
+	// missing directory as a deletion, so commit and tag directly.
+	git(t, path, "update-index", "--add", "--cacheinfo", fmt.aprintf("160000,%s,src/vendor", first))
+	write_file(t, krs.path_join(path, "src/alpha.odin"), "package alpha\n\nX :: #load(\"vendor/x.txt\", string)\nRELEASE :: \"v0.2.0\"\n")
+	git(t, path, "add", "src/alpha.odin")
+	git(t, path, "commit", "--quiet", "-m", "v0.2.0")
+	git(t, path, "tag", "v0.2.0")
+
+	project_imports(&fixture, "alpha")
+	result := run(&fixture, "", "install", "--yes")
+	expect_ok(&fixture, result)
+
+	expect_contains(&fixture, result.out, "inside submodule src/vendor")
+}

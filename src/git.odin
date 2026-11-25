@@ -5,6 +5,7 @@ import "core:c"
 import "core:os"
 import "core:slice"
 import "core:strings"
+import "core:unicode/utf8"
 
 Git_Release :: struct {
 	repository: ^Git_Repository,
@@ -118,14 +119,78 @@ git_release_close :: proc(release: Git_Release) {
 	git_close(release.repository)
 }
 
-git_list_files :: proc(release: Git_Release) -> (files: [dynamic]string, ok: bool) {
+// Why a path component read from a release tree cannot be installed, or ""
+// when it is safe. Every tree name that becomes a filesystem path must pass
+// through here.
+git_tree_name_problem :: proc(name: string) -> string {
+	if name == "" || name == "." || name == ".." {
+		return "is not a usable name"
+	}
+
+	for index in 0 ..< len(name) {
+		if name[index] < 0x20 || name[index] == 0x7f {
+			return "has a control character"
+		}
+	}
+
+	if git_tree_name_is_git_metadata(name) {
+		return "is reserved for Git metadata"
+	}
+
+	return ""
+}
+
+// True when the name reads as ".git" once ASCII letter case and the code
+// points that filesystems ignore are set aside.
+@(private = "file")
+git_tree_name_is_git_metadata :: proc(name: string) -> bool {
+	folded: [dynamic]byte
+	defer delete(folded)
+
+	rest := name
+	for len(rest) > 0 {
+		r, size := utf8.decode_rune_in_string(rest)
+		rest = rest[size:]
+		if git_tree_rune_is_ignorable(r) {
+			continue
+		}
+
+		if r >= 0x80 {
+			return false
+		}
+
+		lower := r + ('a' - 'A') if 'A' <= r && r <= 'Z' else r
+		append(&folded, byte(lower))
+		if len(folded) > len(".git") {
+			return false
+		}
+	}
+
+	return string(folded[:]) == ".git"
+}
+
+@(private = "file")
+git_tree_rune_is_ignorable :: proc(r: rune) -> bool {
+	switch r {
+	case 0x200C ..= 0x200F, 0x202A ..= 0x202E, 0x206A ..= 0x206F, 0xFEFF:
+		return true
+	}
+
+	return false
+}
+
+// Lists the regular files of a release. Symbolic links and submodules are
+// never installed; `skipped` maps each one's path to what it is.
+git_list_files :: proc(release: Git_Release) -> (files: [dynamic]string, skipped: map[string]string, ok: bool) {
 	Walk :: struct {
-		files: ^[dynamic]string,
-		ctx:   runtime.Context,
+		files:   ^[dynamic]string,
+		skipped: ^map[string]string,
+		ctx:     runtime.Context,
 	}
 	walk := Walk {
-		files = &files,
-		ctx   = context,
+		files   = &files,
+		skipped = &skipped,
+		ctx     = context,
 	}
 	visit :: proc "c" (root: cstring, entry: ^Git_Tree_Entry, payload: rawptr) -> c.int {
 		walk := cast(^Walk)payload
@@ -136,8 +201,20 @@ git_list_files :: proc(release: Git_Release) -> (files: [dynamic]string, ok: boo
 			return -1
 		}
 
-		if git_tree_entry_type(entry) == .Blob {
-			append(walk.files, strings.concatenate({string(root), name}))
+		path := strings.concatenate({string(root), name})
+		mode := git_tree_entry_filemode(entry)
+		if mode == .Link {
+			walk.skipped[path] = "a symbolic link"
+			return 0
+		}
+
+		if git_tree_entry_type(entry) == .Commit {
+			walk.skipped[path] = "a submodule"
+			return 0
+		}
+
+		if mode == .Blob || mode == .Blob_Executable {
+			append(walk.files, path)
 		}
 		return 0
 	}
@@ -165,6 +242,11 @@ git_read_file :: proc(release: Git_Release, path: string) -> (data: []byte, stat
 	}
 	defer git_tree_entry_free(entry)
 	if git_tree_entry_type(entry) != .Blob {
+		return nil, .Failed
+	}
+
+	// A symbolic link is a blob holding its target path, never content.
+	if git_tree_entry_filemode(entry) == .Link {
 		return nil, .Failed
 	}
 

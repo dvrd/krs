@@ -74,13 +74,15 @@ list_files :: proc(base, relative: string, walk: File_Walk, files: ^[dynamic]str
 	return true
 }
 
-source_list :: proc(source: Source) -> (files: [dynamic]string, ok: bool) {
+// The files of a source. For a release, `skipped` names the symbolic links and
+// submodules left out; a working tree's walk already ignores them.
+source_list :: proc(source: Source) -> (files: [dynamic]string, skipped: map[string]string, ok: bool) {
 	if source.release.tree != nil {
 		return git_list_files(source.release)
 	}
 
 	list_files(source.repository, "", .Source, &files) or_return
-	return files, true
+	return files, skipped, true
 }
 
 source_read :: proc(source: Source, path: string) -> (data: []byte, ok: bool) {
@@ -141,10 +143,31 @@ is_os_metadata :: proc(name: string) -> bool {
 	return strings.has_prefix(name, "._") // AppleDouble files on non-Apple volumes
 }
 
-select_reference :: proc(selection: ^Selection, known, chosen: ^map[string]bool, file, reference: string) {
+// The submodule that holds `target`, or "" when none does.
+select_enclosing_submodule :: proc(skipped: ^map[string]string, target: string) -> string {
+	for path, kind in skipped {
+		if kind == "a submodule" && strings.has_prefix(target, strings.concatenate({path, "/"})) {
+			return path
+		}
+	}
+
+	return ""
+}
+
+select_reference :: proc(selection: ^Selection, known, chosen: ^map[string]bool, skipped: ^map[string]string, file, reference: string) {
 	target, ok := path_clean_relative(path_join(path_directory(file), reference))
 	if !ok || strings.has_prefix(reference, "/") || !strings.has_prefix(target, selection.prefix) {
 		append(&selection.warnings, fmt.aprintf("%s names \"%s\", which is outside the package", file, reference))
+		return
+	}
+
+	if kind, is_skipped := skipped[target]; is_skipped {
+		append(&selection.warnings, fmt.aprintf("%s names \"%s\", which is %v in the release; krs installs regular files only", file, reference, kind))
+		return
+	}
+
+	if submodule := select_enclosing_submodule(skipped, target); submodule != "" {
+		append(&selection.warnings, fmt.aprintf("%s names \"%s\", which is inside submodule %s; submodules are not installed", file, reference, submodule))
 		return
 	}
 
@@ -156,7 +179,7 @@ select_reference :: proc(selection: ^Selection, known, chosen: ^map[string]bool,
 	chosen[target] = true
 }
 
-select_directory :: proc(selection: ^Selection, files: []string, chosen: ^map[string]bool, file, reference: string) {
+select_directory :: proc(selection: ^Selection, files: []string, chosen: ^map[string]bool, skipped: ^map[string]string, file, reference: string) {
 	target, ok := path_clean_relative(path_join(path_directory(file), reference))
 	if !ok || strings.has_prefix(reference, "/") ||
 	   !strings.has_prefix(strings.concatenate({target, "/"}), selection.prefix) {
@@ -172,15 +195,23 @@ select_directory :: proc(selection: ^Selection, files: []string, chosen: ^map[st
 		}
 	}
 
-	if !found {
-		append(&selection.warnings, fmt.aprintf("%s names directory \"%s\", which has no files in the release", file, reference))
+	if found {
+		return
 	}
+
+	submodule := target if skipped[target] == "a submodule" else select_enclosing_submodule(skipped, target)
+	if submodule != "" {
+		append(&selection.warnings, fmt.aprintf("%s names directory \"%s\", which is inside submodule %s; submodules are not installed", file, reference, submodule))
+		return
+	}
+
+	append(&selection.warnings, fmt.aprintf("%s names directory \"%s\", which has no files in the release", file, reference))
 }
 
 // Decides which files of a release are installed: the Odin files, the files
 // they name, and the licence and notice files.
 select_files :: proc(source: Source, name: string) -> (selection: Selection, ok: bool) {
-	listed := source_list(source) or_return
+	listed, skipped := source_list(source) or_return
 	files: [dynamic]string
 	for file in listed {
 		if !is_os_metadata(path_base(file)) {
@@ -217,10 +248,10 @@ select_files :: proc(source: Source, name: string) -> (selection: Selection, ok:
 			}
 		}
 		for reference in scan.file_refs {
-			select_reference(&selection, &known, &chosen, file, reference)
+			select_reference(&selection, &known, &chosen, &skipped, file, reference)
 		}
 		for reference in scan.directory_refs {
-			select_directory(&selection, files[:], &chosen, file, reference)
+			select_directory(&selection, files[:], &chosen, &skipped, file, reference)
 		}
 		for directive in scan.unresolved {
 			append(&selection.warnings, fmt.aprintf("%s has a #%s whose path is not a string literal", file, directive))

@@ -19,6 +19,15 @@ Git_Object_Type :: enum c.int {
 	Blob   = 3,
 }
 
+Git_Filemode :: enum c.int {
+	Unreadable      = 0,
+	Tree            = 0o040000,
+	Blob            = 0o100644,
+	Blob_Executable = 0o100755,
+	Link            = 0o120000,
+	Commit          = 0o160000,
+}
+
 Git_Download_Tags :: enum c.int {
 	Auto = 1,
 }
@@ -68,6 +77,7 @@ foreign libgit2 {
 	git_tree_walk :: proc(tree: ^Git_Tree, mode: c.int, visitor: Git_Tree_Visitor, payload: rawptr) -> c.int ---
 	git_tree_entry_name :: proc(entry: ^Git_Tree_Entry) -> cstring ---
 	git_tree_entry_type :: proc(entry: ^Git_Tree_Entry) -> Git_Object_Type ---
+	git_tree_entry_filemode :: proc(entry: ^Git_Tree_Entry) -> Git_Filemode ---
 	git_tree_entry_bypath :: proc(out: ^^Git_Tree_Entry, tree: ^Git_Tree, path: cstring) -> c.int ---
 	git_tree_entry_to_object :: proc(out: ^^Git_Object, repo: ^Git_Repository, entry: ^Git_Tree_Entry) -> c.int ---
 	git_tree_entry_free :: proc(entry: ^Git_Tree_Entry) ---
