@@ -1,0 +1,12 @@
+{
+  "format": 1,
+  "packages": [
+    {
+      "name": "kakunou",
+      "source": "https://github.com/dvrd/kakunou.git",
+      "tag": "v0.2.2",
+      "commit": "0d86806d7fc17e27fb7ddbc16421a1e9a98fb82d",
+      "hash": "6dfad6bdf480900179b1c6a4f0e73435d0236881c04b168442f3ee35e275ad29"
+    }
+  ]
+}
