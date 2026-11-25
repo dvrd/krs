@@ -396,9 +396,6 @@ journal_recover_record :: proc(
 // be locked. The returned scope names a current directory in its place, which
 // scope_lock skips.
 journal_lock_scope :: proc(record, current: Journal_Scope) -> (scope: Journal_Scope, project_missing, root_missing: bool) {
-	assert(record.project != "")
-	assert(record.root != "")
-
 	scope = record
 	if record.project != current.project && record.project != current.root && !os.exists(record.project) {
 		scope.project = current.project
