@@ -67,6 +67,8 @@ Update_Options :: struct {
 	doctor:         bool, // `update -u --doctor`: test upgrades and keep the passing ones
 	doctor_test:    string, // shell command for the tests; "" means the default
 	doctor_install: string, // shell command run after each install; "" means none
+	deep:          bool, // `update --deep`: every project under the current directory
+	package_files: [dynamic]string, // `update --package-file`: chosen projects' lockfiles
 }
 
 // Which upgrades `update -i` selects before the person changes anything.
@@ -118,7 +120,7 @@ update_flag_takes_value :: proc(flag: string) -> bool {
 	switch flag {
 	case "-t", "--target", "-f", "--filter", "-x", "--reject", "--filter-version", "--reject-version",
 	     "--format", "-e", "--error-level", "-l", "--loglevel", "--install", "--interactive-select",
-	     "-c", "--cooldown", "--doctor-test", "--doctor-install":
+	     "-c", "--cooldown", "--doctor-test", "--doctor-install", "--package-file":
 		return true
 	}
 	return false
@@ -132,7 +134,7 @@ update_flag_only :: proc(flag: string) -> bool {
 
 	switch flag {
 	case "-u", "--upgrade", "-j", "--json-all", "--json-upgraded", "--json-deps", "-g", "--global",
-	     "-s", "--silent", "--pin", "-i", "--interactive", "-d", "--doctor":
+	     "-s", "--silent", "--pin", "-i", "--interactive", "-d", "--doctor", "--deep":
 		return true
 	}
 	return false

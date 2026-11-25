@@ -12,9 +12,9 @@ USAGE_FORMAT :: `%[0]susage:%[1]s
       install the releases this project imports
   krs %[0]sstatus%[1]s [--root=<path>]
       list what the Odin root holds for this project
-  krs %[0]supdate%[1]s [<package>[@<tag>]...] [--cooldown=<period>] [options]
+  krs %[0]supdate%[1]s [<package>[@<tag>]...] [--cooldown=<period>] [--deep] [--package-file=<p>] [options]
       list newer releases; filter with names, -f, -x
-  krs %[0]supdate -u%[1]s [<package>[@<tag>]...] [--cooldown=<period>] [options]
+  krs %[0]supdate -u%[1]s [<package>[@<tag>]...] [--cooldown=<period>] [--deep] [--package-file=<p>] [options]
       write the chosen versions to .krs/packages.json and install them
   krs %[0]supdate -u --doctor%[1]s [--doctor-test=<cmd>] [--doctor-install=<cmd>] [options]
       upgrade, run the tests and keep only the upgrades that pass
@@ -73,6 +73,8 @@ USAGE_FORMAT :: `%[0]susage:%[1]s
   %[0]s--json-deps%[1]s             print the new package list as JSON
   %[0]s-e, --error-level%[1]s <n>   2: exit 1 when upgrades are available
   %[0]s-g, --global%[1]s            check every package of the Odin root
+  %[0]s--deep%[1]s                  check every project under this directory
+  %[0]s--package-file%[1]s <p>      check the projects whose lockfile matches p (repeatable)
   %[0]s--color%[1]s                 force colors
   %[0]s-s, --silent%[1]s            print nothing; use the exit code
   %[0]s-l, --loglevel%[1]s <l>      silent, error, minimal, warn, info or verbose
@@ -266,6 +268,10 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 			if doctor_flag == "" {
 				doctor_flag = flag
 			}
+		case flag == "--deep":
+			options.update.deep = true
+		case flag == "--package-file":
+			append(&options.update.package_files, value)
 		case flag == "--color":
 			env.style.stdout = true
 			env.style.color = true
@@ -373,6 +379,17 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 		}
 	}
 
+	deep_run := options.update.deep || len(options.update.package_files) > 0
+	if deep_run && options.update.json != .None {
+		fail(env, "--deep and --package-file cannot be combined with JSON output")
+		return EXIT_USAGE
+	}
+
+	if deep_run && options.update.global {
+		fail(env, "--deep and --global cannot be combined")
+		return EXIT_USAGE
+	}
+
 	if options.update.pin && !options.update.upgrade {
 		fail(env, "--pin only applies to update -u")
 		return EXIT_USAGE
@@ -454,10 +471,10 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 		ok = command_install(env, options)
 	case words[0] == "status" && len(words) == 1:
 		ok = command_status(env, options)
-	case words[0] == "update" && options.update.upgrade:
-		ok = command_update_upgrade(env, options, words[1:])
+	case words[0] == "update" && deep_run:
+		ok = command_update_deep(env, options, words[:])
 	case words[0] == "update":
-		ok = command_check(env, options, words[1:])
+		ok = update_dispatch(env, options, words[:])
 	case words[0] == "fetch" && len(words) == 1:
 		ok = command_fetch_all(env)
 	case words[0] == "fetch" && len(words) == 2:
@@ -493,6 +510,64 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 	}
 
 	return EXIT_OK if ok else EXIT_FAILED
+}
+
+// One `krs update` for the project at env.project: -u (with --doctor and -i
+// inside it) writes; without -u it only lists.
+update_dispatch :: proc(env: ^Env, options: Options, words: []string) -> bool {
+	if options.update.upgrade {
+		return command_update_upgrade(env, options, words[1:])
+	}
+
+	return command_check(env, options, words[1:])
+}
+
+// `krs update --deep` and `--package-file`: one update_dispatch per project,
+// each with its own locks and lockfile. A failing project does not stop the
+// others.
+command_update_deep :: proc(env: ^Env, options: Options, words: []string) -> bool {
+	start := env.project
+	projects := deep_projects(env, start) or_return
+	selected := make([dynamic]string, context.temp_allocator)
+	for project in projects {
+		relative := "." if project == start else project[len(start) + 1:]
+		lockfile := path_join(relative, PACKAGES_PATH) if relative != "." else PACKAGES_PATH
+		if len(options.update.package_files) > 0 {
+			chosen := false
+			for pattern in options.update.package_files {
+				if package_file_matches(pattern, lockfile) {
+					chosen = true
+					break
+				}
+			}
+
+			if !chosen {
+				continue
+			}
+		}
+		append(&selected, project)
+	}
+
+	if len(selected) == 0 {
+		return fail(env, "no project matches")
+	}
+
+	all_ok := true
+	for project in selected {
+		relative := "." if project == start else project[len(start) + 1:]
+		say(env, "%v %s", paint(env, ANSI_CYAN, "project"), relative)
+		project_env := env^
+		project_env.project = project
+		if !update_dispatch(&project_env, options, words) {
+			all_ok = false
+		}
+	}
+
+	if all_ok {
+		success(env, "%d project(s) checked", len(selected))
+	}
+
+	return all_ok
 }
 
 command_install :: proc(env: ^Env, options: Options) -> bool {

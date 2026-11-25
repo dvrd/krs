@@ -180,12 +180,17 @@ project_imports :: proc(fixture: ^Fixture, imports: ..string) {
 
 // Runs a krs command in the fixture. With `input`, a person is answering.
 run :: proc(fixture: ^Fixture, input: string, arguments: ..string) -> Result {
+	return run_in(fixture, fixture.project, input, ..arguments)
+}
+
+// Runs a krs command as if started in `directory`.
+run_in :: proc(fixture: ^Fixture, directory, input: string, arguments: ..string) -> Result {
 	out := strings.builder_make()
 	err := strings.builder_make()
 	reader: strings.Reader
 
 	env := krs.Env {
-		project      = fixture.project,
+		project      = directory,
 		home         = fixture.home,
 		default_root = fixture.root,
 		out          = strings.to_writer(&out),

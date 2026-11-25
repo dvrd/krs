@@ -1864,3 +1864,107 @@ nested_project_imports_stay_out_of_the_parent :: proc(t: ^testing.T) {
 	expect_contains(&fixture, packages_text(&fixture), "\"beta\"")
 	testing.expect(t, !strings.contains(packages_text(&fixture), "\"gamma\""))
 }
+
+// beta v1.0.0 in the project, gamma v1.0.0 in tools/gen, both installed, then
+// both libraries released again at v1.1.0.
+deep_fixture :: proc(fixture: ^Fixture) -> (gen: string) {
+	library_release(fixture, "beta", "v1.0.0")
+	library_release(fixture, "gamma", "v1.0.0")
+	project_imports(fixture, "beta")
+	gen = krs.path_join(fixture.project, "tools/gen")
+	write_file(fixture.t, krs.path_join(gen, "main.odin"), "package main\n\nimport \"shared:gamma\"\n")
+	write_file(fixture.t, krs.path_join(gen, krs.PACKAGES_PATH), "{\"format\": 1, \"packages\": []}\n")
+	expect_ok(fixture, run_in(fixture, gen, "", "install", "--yes"))
+	expect_ok(fixture, run(fixture, "", "install", "--yes"))
+	library_release(fixture, "beta", "v1.1.0")
+	library_release(fixture, "gamma", "v1.1.0")
+
+	return gen
+}
+
+@(test)
+update_deep_lists_every_project :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	deep_fixture(&fixture)
+	result := run(&fixture, "", "update", "--deep")
+	expect_ok(&fixture, result)
+	expect_contains(&fixture, result.out, "project .")
+	expect_contains(&fixture, result.out, "project tools/gen")
+	expect_contains(&fixture, result.out, "beta")
+	expect_contains(&fixture, result.out, "gamma")
+	expect_contains(&fixture, result.out, "v1.1.0")
+}
+
+@(test)
+update_deep_upgrades_each_lockfile :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	gen := deep_fixture(&fixture)
+	expect_ok(&fixture, run(&fixture, "", "update", "--deep", "-u", "--yes"))
+	parent := packages_text(&fixture)
+	child := read_file(krs.path_join(gen, krs.PACKAGES_PATH))
+	expect_contains(&fixture, parent, "\"beta\"")
+	expect_contains(&fixture, parent, "v1.1.0")
+	expect_contains(&fixture, child, "\"gamma\"")
+	expect_contains(&fixture, child, "v1.1.0")
+	testing.expect(t, !strings.contains(parent, "\"gamma\""))
+	testing.expect(t, !strings.contains(child, "\"beta\""))
+}
+
+@(test)
+update_package_file_selects_projects :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	deep_fixture(&fixture)
+	result := run(&fixture, "", "update", "--package-file=tools/*")
+	expect_ok(&fixture, result)
+	expect_contains(&fixture, result.out, "project tools/gen")
+	testing.expect(t, !strings.contains(result.out, "project ."))
+
+	none := run(&fixture, "", "update", "--package-file=nothing")
+	expect_failure(&fixture, none, "no project matches")
+}
+
+@(test)
+update_deep_skips_vendor_and_hidden :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	deep_fixture(&fixture)
+	write_file(t, krs.path_join(fixture.project, "vendor/x/.krs/packages.json"), "{\"format\": 1, \"packages\": []}\n")
+	write_file(t, krs.path_join(fixture.project, ".cache/y/.krs/packages.json"), "{\"format\": 1, \"packages\": []}\n")
+	result := run(&fixture, "", "update", "--deep")
+	expect_ok(&fixture, result)
+	testing.expect(t, !strings.contains(result.out, "project vendor"))
+	testing.expect(t, !strings.contains(result.out, "project .cache"))
+}
+
+@(test)
+update_deep_flags_are_checked :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	Misuse :: struct {
+		arguments: []string,
+		message:   string,
+	}
+	misuses := []Misuse {
+		{{"install", "--deep"}, "only applies to update"},
+		{{"update", "--deep", "-j"}, "cannot be combined with JSON output"},
+		{{"update", "--deep", "-g"}, "--deep and --global cannot be combined"},
+	}
+	for misuse in misuses {
+		result := run(&fixture, "", ..misuse.arguments)
+		testing.expectf(t, result.code == krs.EXIT_USAGE, "%v: exit %d, err: %s", misuse.arguments, result.code, result.err)
+		expect_contains(&fixture, result.err, misuse.message)
+	}
+}
