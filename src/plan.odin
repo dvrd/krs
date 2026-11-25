@@ -208,6 +208,24 @@ repository_open :: proc(state: ^State, path: string, cached := false) -> (reposi
 	return
 }
 
+// Drops what this command learned about a repository that was written to.
+repository_forget :: proc(state: ^State, path: string) {
+	delete_key(&state.repositories, repository_cache_key(path, true))
+	delete_key(&state.repositories, repository_cache_key(path, false))
+
+	// Collect first: never delete from a map while iterating it.
+	stale := make([dynamic][2]string, context.temp_allocator)
+	for key in state.tag_commits {
+		if key[0] == path {
+			append(&stale, key)
+		}
+	}
+
+	for key in stale {
+		delete_key(&state.tag_commits, key)
+	}
+}
+
 repository_read :: proc(path: string, cached: bool) -> (repository: Repository, reason: string) {
 	repo, ok := git_open(path)
 	if !ok {
@@ -356,8 +374,22 @@ repository_resolve :: proc(state: ^State, name, tag, source, commit: string, sou
 			return {}, fail(state.env, "the GitHub repository in libs.%s does not match the recorded origin %q", name, origin)
 		}
 
+		// Fetch once per command, even if the fetch fails; a later pass
+		// reads the cache as this fetch left it.
+		assert(origin == github_origin(github))
+		if state.fetched[origin] {
+			return {}, fail(state.env, "the GitHub repository for %s did not provide tag %s", name, tag)
+		}
+
+		state.fetched[origin] = true
 		state.counts.fetches += 1
-		cache_github_repository(state.env, github) or_return
+		fetched := cache_github_repository(state.env, github)
+		// Even a failed fetch may have written to the cache.
+		repository_forget(state, github_cache_path(state.env, github))
+		if !fetched {
+			return {}, false
+		}
+
 		if refreshed, available := repository_candidate(state, github_cache_path(state.env, github), tag, origin, true); available {
 			repository_check_pin(state, name, wanted, refreshed)
 			return refreshed, true
