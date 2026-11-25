@@ -81,6 +81,28 @@ compatible_update_respects_the_dependency_commit_pin :: proc(t: ^testing.T) {
 }
 
 @(test)
+dependency_lockfile_cannot_redirect_a_local_package :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	commit := library_release(&fixture, "beta", "v1.0.0")
+	pins := fmt.aprintf(
+		"{{\"format\": 1, \"packages\": [{{\"name\": \"beta\", \"source\": \"https://github.com/other/unrelated.git\", \"tag\": \"v1.0.0\", \"commit\": \"%s\", \"hash\": \"\"}}]}}\n",
+		commit,
+	)
+	repository_make(&fixture, "alpha")
+	write_file(t, krs.path_join(fixture.sources, "alpha/.krs/packages.json"), pins)
+	library_release(&fixture, "alpha", "v1.0.0", "beta")
+	project_imports(&fixture, "alpha")
+
+	result := run(&fixture, "", "install", "--yes")
+	expect_ok(&fixture, result)
+	expect_release(&fixture, "beta", "v1.0.0")
+	expect_contains(&fixture, result.out, "pins beta from")
+}
+
+@(test)
 install_ignores_dependencies_dropped_by_a_later_version_selection :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 

@@ -260,7 +260,7 @@ command_update :: proc(env: ^Env, options: Options, target: string) -> bool {
 	say_version_change(env, name, from, tag, compatibility)
 	update_report_dependants(state, name, tag)
 
-	append(&state.queue, Request{name = name, tag = tag, source = record.source, by = "krs update", kind = .Update, recorded = true})
+	append(&state.queue, Request{name = name, tag = tag, source = record.source, by = "krs update", kind = .Update, recorded = true, source_trusted = true})
 	plan_discover(state) or_return
 	plan_drain(state) or_return
 
@@ -697,7 +697,7 @@ command_unlink :: proc(env: ^Env, options: Options, name: string) -> bool {
 	if options.restore {
 		unlink_report_unnamed(state, name, record.path)
 		info(env, "restoring %s %s", name, tag)
-		append(&state.queue, Request{name = name, tag = tag, source = source, commit = commit, by = "krs unlink", kind = .Restore})
+		append(&state.queue, Request{name = name, tag = tag, source = source, commit = commit, by = "krs unlink", kind = .Restore, source_trusted = true})
 		plan_drain(state) or_return
 		return plan_apply(state, .Preserve)
 	}

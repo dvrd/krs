@@ -44,13 +44,14 @@ Request_Kind :: enum {
 
 // A version requested by a dependency, an update, or an unlink.
 Request :: struct {
-	name:     string,
-	tag:      string, // empty: any version will do
-	commit:   string,
-	source:   string,
-	by:       string,
-	kind:     Request_Kind,
-	recorded: bool,
+	name:           string,
+	tag:            string, // empty: any version will do
+	commit:         string,
+	source:         string,
+	by:             string,
+	kind:           Request_Kind,
+	recorded:       bool,
+	source_trusted: bool, // source came from the user's own records, not a dependency
 }
 
 Version_Conflict :: struct {
@@ -249,8 +250,19 @@ repository_find :: proc(state: ^State, name, tag, source: string) -> (repository
 	return repository_candidate(state, path_join(repository_store(state.env), name), tag, origin, true)
 }
 
-repository_resolve :: proc(state: ^State, name, tag, source, commit: string) -> (repository: Repository, ok: bool) {
-	origin := source_identity(source)
+// A dependency's recorded source does not choose the repository; report
+// when the repository that was chosen comes from elsewhere.
+repository_check_pin :: proc(state: ^State, name, wanted: string, candidate: Repository) {
+	if wanted == "" || candidate.source == wanted {
+		return
+	}
+
+	report_once(state, "a dependency pins %s from %s; using %s, which comes from %s", name, wanted, candidate.path, candidate.source)
+}
+
+repository_resolve :: proc(state: ^State, name, tag, source, commit: string, source_trusted: bool) -> (repository: Repository, ok: bool) {
+	origin := source_identity(source) if source_trusted else ""
+	wanted := "" if source_trusted else source_identity(source)
 	library, configured := state.config.libs[name]
 	github: GitHub_Repository
 	if state.fetch_configured && configured {
@@ -271,6 +283,7 @@ repository_resolve :: proc(state: ^State, name, tag, source, commit: string) -> 
 
 	candidate, found := repository_find(state, name, tag, origin)
 	if found {
+		repository_check_pin(state, name, wanted, candidate)
 		return candidate, true
 	}
 
@@ -281,6 +294,7 @@ repository_resolve :: proc(state: ^State, name, tag, source, commit: string) -> 
 
 		cache_github_repository(state.env, github) or_return
 		if refreshed, available := repository_candidate(state, github_cache_path(state.env, github), tag, origin, true); available {
+			repository_check_pin(state, name, wanted, refreshed)
 			return refreshed, true
 		}
 		return {}, fail(state.env, "the GitHub repository for %s did not provide tag %s", name, tag)
@@ -288,6 +302,8 @@ repository_resolve :: proc(state: ^State, name, tag, source, commit: string) -> 
 
 	if pinned, valid := github_repository_from_origin(origin); valid {
 		note(state.env, "use %s to cache the recorded origin", fmt.tprintf("krs fetch %s", github_locator(pinned)))
+	} else if _, wanted_github := github_repository_from_origin(wanted); wanted_github {
+		note(state.env, "a dependency pins %s from %s; add a libs entry for %s in config.json to use it", name, wanted, name)
 	}
 
 	if tag == "" {
@@ -364,8 +380,8 @@ repository_tag_commit :: proc(env: ^Env, path, name, tag, expected_commit: strin
 }
 
 // Points a decision at a tag, resolving the repository and the commit.
-decision_set_tag :: proc(state: ^State, decision: ^Decision, tag, source, commit: string) -> bool {
-	repository := repository_resolve(state, decision.name, tag, source, commit) or_return
+decision_set_tag :: proc(state: ^State, decision: ^Decision, tag, source, commit: string, source_trusted: bool) -> bool {
+	repository := repository_resolve(state, decision.name, tag, source, commit, source_trusted) or_return
 
 	chosen := tag
 	if chosen == "" {
@@ -454,7 +470,7 @@ decision_apply :: proc(state: ^State, decision: ^Decision, request: Request) -> 
 	}
 
 	if request.kind != .Dependency {
-		decision_set_tag(state, decision, request.tag, request.source, request.commit) or_return
+		decision_set_tag(state, decision, request.tag, request.source, request.commit, request.source_trusted) or_return
 		decision.forced = true
 		return true
 	}
@@ -464,7 +480,7 @@ decision_apply :: proc(state: ^State, decision: ^Decision, request: Request) -> 
 	}
 
 	if decision.tag == "" {
-		decision_set_tag(state, decision, request.tag, request.source, request.commit) or_return
+		decision_set_tag(state, decision, request.tag, request.source, request.commit, request.source_trusted) or_return
 		return true
 	}
 
@@ -480,6 +496,10 @@ decision_apply :: proc(state: ^State, decision: ^Decision, request: Request) -> 
 				request.commit,
 			)
 		}
+
+		if !request.source_trusted && request.source != "" && source_identity(request.source) != decision.source {
+			report_once(state, "%s pins %s from %s; using the one from %s", request.by, decision.name, source_identity(request.source), decision.source)
+		}
 		return true
 	}
 
@@ -493,7 +513,7 @@ decision_apply :: proc(state: ^State, decision: ^Decision, request: Request) -> 
 		return true
 	}
 
-	return decision_set_tag(state, decision, chosen, request.source, request.commit)
+	return decision_set_tag(state, decision, chosen, request.source, request.commit, request.source_trusted)
 }
 
 // The files a decided release installs, read once.
@@ -597,7 +617,7 @@ plan_request :: proc(state: ^State, request: Request) -> bool {
 		decision = decision_create(state, request.name)
 		pin := packages_find(&state.packages, request.name)
 		if pin != nil && request.kind == .Dependency {
-			own := Request{name = pin.name, tag = pin.tag, commit = pin.commit, source = pin.source, by = "this project"}
+			own := Request{name = pin.name, tag = pin.tag, commit = pin.commit, source = pin.source, by = "this project", source_trusted = true}
 			decision_apply(state, decision, own) or_return
 		}
 	}
@@ -607,9 +627,9 @@ plan_request :: proc(state: ^State, request: Request) -> bool {
 	if decision.action == .Install && decision.tag == "" {
 		record := manifest_find(&state.manifest, decision.name)
 		if record != nil && record.tag != "" {
-			decision_set_tag(state, decision, record.tag, record.source, record.commit) or_return
+			decision_set_tag(state, decision, record.tag, record.source, record.commit, true) or_return
 		} else {
-			decision_set_tag(state, decision, "", request.source, "") or_return
+			decision_set_tag(state, decision, "", request.source, "", request.source_trusted) or_return
 		}
 	}
 

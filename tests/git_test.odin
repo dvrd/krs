@@ -143,6 +143,54 @@ install_fetches_only_configured_github_libraries_and_can_reinstall_frozen :: pro
 }
 
 @(test)
+dependency_lockfile_cannot_pick_an_arbitrary_cached_repository :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	commit := github_fixture_release(&fixture, "other", "unrelated", "v1.0.0")
+	expect_ok(&fixture, run(&fixture, "", "fetch", "other/unrelated"))
+	pins := fmt.aprintf(
+		"{{\"format\": 1, \"packages\": [{{\"name\": \"beta\", \"source\": \"https://github.com/other/unrelated.git\", \"tag\": \"v1.0.0\", \"commit\": \"%s\", \"hash\": \"\"}}]}}\n",
+		commit,
+	)
+	repository_make(&fixture, "alpha")
+	write_file(t, krs.path_join(fixture.sources, "alpha/.krs/packages.json"), pins)
+	library_release(&fixture, "alpha", "v1.0.0", "beta")
+	project_imports(&fixture, "alpha")
+
+	expect_failure(&fixture, run(&fixture, "", "install", "--yes"), "no repository for \"beta\"")
+	testing.expect(t, !os.exists(krs.path_join(fixture.shared, "beta")))
+}
+
+@(test)
+dependency_pin_through_libs_alias_still_works :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	write_file(t, krs.path_join(fixture.home, krs.CONFIG_PATH), fmt.aprintf(
+		"{{\"format\": 1, \"source_directories\": [\"%s\"], \"libs\": {{\"kessel\": {{\"source\": \"github\", \"target\": \"dvrd/project-kessel\"}}}}}}\n",
+		fixture.sources,
+	))
+	commit := github_fixture_release(&fixture, "dvrd", "project-kessel", "v1.0.0")
+	pins := fmt.aprintf(
+		"{{\"format\": 1, \"packages\": [{{\"name\": \"kessel\", \"source\": \"https://github.com/dvrd/project-kessel.git\", \"tag\": \"v1.0.0\", \"commit\": \"%s\", \"hash\": \"\"}}]}}\n",
+		commit,
+	)
+	repository_make(&fixture, "alpha")
+	write_file(t, krs.path_join(fixture.sources, "alpha/.krs/packages.json"), pins)
+	library_release(&fixture, "alpha", "v1.0.0", "kessel")
+	project_imports(&fixture, "alpha")
+
+	result := run(&fixture, "", "install", "--yes")
+	expect_ok(&fixture, result)
+	// The aliased repository's source file keeps the repository's name.
+	expect_contains(&fixture, read_file(krs.path_join(fixture.shared, "kessel/project-kessel.odin")), "RELEASE :: \"v1.0.0\"")
+	testing.expect(t, !strings.contains(result.out, "a dependency pins"))
+}
+
+@(test)
 configured_github_origin_cannot_replace_a_recorded_origin :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	fixture := fixture_make(t)
