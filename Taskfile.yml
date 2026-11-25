@@ -69,9 +69,13 @@ tasks:
         set -e
         out="${KRS_CHECK_DIR:-${TMPDIR:-/tmp}/krs-check}"
         git_libdir=$(pkg-config --variable=libdir libgit2)
+        link_flags="-L\"$git_libdir\""
+        if [ "$(uname -s)" != Darwin ]; then
+          link_flags="$link_flags -Wl,-rpath,$git_libdir"
+        fi
         mkdir -p "$out"
         odin {{.ACTION}} {{.PACKAGE}} -out:"$out/{{.BINARY}}" -vet -o:{{.OPT | default "none"}} \
-          "-extra-linker-flags:-L\"$git_libdir\""
+          "-extra-linker-flags:$link_flags"
         if [ '{{.QUIET}}' != true ]; then
           printf 'krs: %s complete (%s/%s)\n' '{{.ACTION}}' "$out" '{{.BINARY}}'
         fi
