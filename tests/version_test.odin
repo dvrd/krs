@@ -340,6 +340,67 @@ link_and_unlink :: proc(t: ^testing.T) {
 }
 
 @(test)
+link_asks_before_replacing_changed_files :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	library_release(&fixture, "beta", "v0.1.0")
+	project_imports(&fixture, "beta")
+	expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
+
+	link := krs.path_join(fixture.shared, "beta")
+	edited := krs.path_join(fixture.shared, "beta/beta.odin")
+	write_file(t, edited, "package beta\n\nEDITED :: true\n")
+
+	expect_failure(&fixture, run(&fixture, "", "link", "beta"), "confirmation is needed")
+	testing.expect(t, !krs.is_symbolic_link(link))
+	expect_contains(&fixture, read_file(edited), "EDITED")
+
+	expect_failure(&fixture, run(&fixture, "n\n", "link", "beta"), "nothing was changed")
+	testing.expect(t, !krs.is_symbolic_link(link))
+	expect_contains(&fixture, read_file(edited), "EDITED")
+
+	linked := run(&fixture, "y\n", "link", "beta")
+	expect_ok(&fixture, linked)
+	expect_contains(&fixture, linked.out, "linking deletes them")
+	testing.expect(t, krs.is_symbolic_link(link))
+}
+
+@(test)
+link_replaces_an_unchanged_install_without_asking :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	library_release(&fixture, "beta", "v0.1.0")
+	project_imports(&fixture, "beta")
+	expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
+	write_file(t, krs.path_join(fixture.shared, "beta/.DS_Store"), "metadata")
+
+	linked := run(&fixture, "", "link", "beta")
+	expect_ok(&fixture, linked)
+	testing.expect(t, !strings.contains(linked.out, "linking deletes them"))
+}
+
+@(test)
+link_with_yes_replaces_changed_files_and_warns :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	library_release(&fixture, "beta", "v0.1.0")
+	project_imports(&fixture, "beta")
+	expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
+	write_file(t, krs.path_join(fixture.shared, "beta/beta.odin"), "package beta\n\nEDITED :: true\n")
+
+	linked := run(&fixture, "", "link", "beta", "--yes")
+	expect_ok(&fixture, linked)
+	expect_contains(&fixture, linked.out, "linking deletes them")
+	testing.expect(t, krs.is_symbolic_link(krs.path_join(fixture.shared, "beta")))
+}
+
+@(test)
 unlink_refuses_a_moved_tag_and_preserves_the_link :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	fixture := fixture_make(t)

@@ -11,7 +11,7 @@ USAGE_FORMAT :: `%[0]susage:%[1]s
   krs %[0]sstatus%[1]s [--root=<path>]
   krs %[0]supdate%[1]s [<package>[@<tag>]] [--root=<path>] [--yes]
   krs %[0]sfetch%[1]s <owner>/<repo>
-  krs %[0]slink%[1]s <package> [--root=<path>]
+  krs %[0]slink%[1]s <package> [--root=<path>] [--yes]
   krs %[0]slink ls%[1]s [--root=<path>]
   krs %[0]sunlink%[1]s <package> [--root=<path>] [--restore] [--yes]
   krs %[0]s--version%[1]s
@@ -315,6 +315,22 @@ command_link :: proc(env: ^Env, options: Options, name: string) -> bool {
 		if read_err == nil && current == source {
 			info(env, "%s is already linked to %s; nothing to do", name, source)
 			return true
+		}
+	}
+
+	if record != nil && record.linked == "" && path_present(target) {
+		hash, hashed := hash_directory(target)
+		if !hashed || hash != record.hash {
+			warn(env, "%s has changes that do not match %s %s; linking deletes them", target, name, record.tag)
+			if !options.yes {
+				if !env.interactive {
+					return fail(env, "confirmation is needed: run in a terminal, or pass --yes")
+				}
+
+				if !ask_yes(env, "Replace the changed files?") {
+					return fail(env, "nothing was changed")
+				}
+			}
 		}
 	}
 
