@@ -21,19 +21,22 @@ Action :: enum {
 
 // What krs has decided for one package name in this run.
 Decision :: struct {
-	name:          string,
-	action:        Action,
-	tag:           string,
-	commit:        string,
-	source:        string,
-	repository:    string,
-	installed_tag: string, // the tag in `shared/` before this run, if krs installed one
-	forced:        bool, // named explicitly by `update` or `unlink`
-	recorded:      bool, // belongs in the project's `.krs/packages.json`
-	selection:     Selection,
-	has_selection: bool,
-	contents:      [dynamic][]byte, // the bytes of `selection.files`, once prepared
-	hash:          string,
+	name:                   string,
+	action:                 Action,
+	tag:                    string,
+	commit:                 string,
+	source:                 string,
+	repository:             string,
+	installed_tag:          string, // the tag in `shared/` before this run, if krs installed one
+	forced:                 bool, // named explicitly by `update` or `unlink`
+	recorded:               bool, // belongs in the project's `.krs/packages.json`
+	selection:              Selection,
+	has_selection:          bool,
+	contents:               [dynamic][]byte, // the bytes of `selection.files`, once prepared
+	hash:                   string,
+	default_source:         string, // source of the first request that took any version
+	default_source_trusted: bool, // whether default_source came from the user's own records
+	failed:                 bool, // a request for this name failed in this pass; choose no default
 }
 
 Request_Kind :: enum {
@@ -648,23 +651,55 @@ plan_request :: proc(state: ^State, request: Request) -> bool {
 		pin := packages_find(&state.packages, request.name)
 		if pin != nil && request.kind == .Dependency {
 			own := Request{name = pin.name, tag = pin.tag, commit = pin.commit, source = pin.source, by = "this project", source_trusted = true}
-			decision_apply(state, decision, own) or_return
+			if !decision_apply(state, decision, own) {
+				decision.failed = true
+				return false
+			}
 		}
 	}
 
-	decision_apply(state, decision, request) or_return
+	if !decision_apply(state, decision, request) {
+		decision.failed = true
+		return false
+	}
 
-	if decision.action == .Install && decision.tag == "" {
-		record := manifest_find(&state.manifest, decision.name)
-		if record != nil && record.tag != "" {
-			decision_set_tag(state, decision, record.tag, record.source, record.commit, true) or_return
-		} else {
-			decision_set_tag(state, decision, "", request.source, "", request.source_trusted) or_return
-		}
+	if decision.action == .Install && decision.tag == "" && decision.default_source == "" {
+		decision.default_source = request.source
+		decision.default_source_trusted = request.source_trusted
 	}
 
 	decision.recorded = decision.recorded || request.recorded
 	return true
+}
+
+// After every request of a pass is applied, a package nobody pinned takes the
+// version shared/ records for it, else its highest tag.
+plan_choose_defaults :: proc(state: ^State) -> bool {
+	resolved := true
+	for name in state.order {
+		decision := state.decisions[name]
+		if decision.failed || decision.action != .Install || decision.tag != "" {
+			continue
+		}
+
+		record := manifest_find(&state.manifest, name)
+		ok: bool
+		if record != nil && record.tag != "" {
+			ok = decision_set_tag(state, decision, record.tag, record.source, record.commit, true)
+		} else {
+			ok = decision_set_tag(state, decision, "", decision.default_source, "", decision.default_source_trusted)
+		}
+
+		if !ok {
+			resolved = false
+		}
+	}
+
+	for name in state.order {
+		decision := state.decisions[name]
+		assert(decision.failed || !resolved || decision.action != .Install || decision.tag != "")
+	}
+	return resolved
 }
 
 // Walk the selected releases from the roots. A request survives the pass
@@ -727,6 +762,10 @@ plan_drain :: proc(state: ^State) -> bool {
 			if !plan_request(state, request) {
 				resolved = false
 			}
+		}
+
+		if !plan_choose_defaults(state) {
+			resolved = false
 		}
 		next, expanded_ok := plan_collect_requests(state, roots)
 		state.env = env
