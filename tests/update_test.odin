@@ -995,3 +995,33 @@ update_u_semver_skips_a_pinned_package :: proc(t: ^testing.T) {
 	expect_release(&fixture, "beta", "v0.4.0")
 	expect_contains(&fixture, result.out, "beta is pinned at v0.4.0")
 }
+
+@(test)
+repair_refuses_a_pin_the_root_has_moved :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	a := fixture_make(t)
+	defer fixture_destroy(&a)
+	b := pinned_divergence(&a)
+	defer fixture_destroy(&b)
+
+	write_file(t, krs.path_join(a.shared, "beta/extra.txt"), "x")
+	expect_failure(&a, run(&a, "", "install", "--repair", "--yes"), "is pinned at v0.1.0")
+	expect_release(&a, "beta", "v0.2.0")
+}
+
+@(test)
+repair_keeps_working_for_a_matching_pin :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	library_release(&fixture, "beta", "v0.1.0")
+	project_imports(&fixture, "beta")
+	expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
+	expect_ok(&fixture, run(&fixture, "", "pin", "beta"))
+	extra := krs.path_join(fixture.shared, "beta/extra.txt")
+	write_file(t, extra, "x")
+	expect_ok(&fixture, run(&fixture, "", "install", "--repair", "--yes"))
+	testing.expect(t, !os.exists(extra))
+	expect_release(&fixture, "beta", "v0.1.0")
+}
