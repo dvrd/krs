@@ -79,7 +79,7 @@ State :: struct {
 	decisions: map[string]^Decision,
 	order:     [dynamic]string,
 	queue:     [dynamic]Request,
-	reported:  [dynamic]string,
+	reported:  [dynamic]Painted,
 	altered:   [dynamic]string,
 	locks:     [2]^os.File,
 	scope:     Journal_Scope,

@@ -6,6 +6,7 @@ import "core:strings"
 import "core:sync"
 import "core:thread"
 import "core:time"
+import "core:unicode/utf8"
 
 ANSI_RED :: "\x1b[31m"
 ANSI_GREEN :: "\x1b[32m"
@@ -86,28 +87,97 @@ stderr_colored :: proc(env: ^Env) -> bool {
 	return env.style.stderr && env.style.color
 }
 
-// Colors a word for standard output, such as the action of a plan line.
-paint :: proc(env: ^Env, color, text: string) -> string {
-	if !stdout_colored(env) {
+// Text krs colored itself; printed as is.
+Painted :: distinct string
+
+// Repository content must not reach the terminal as control sequences.
+printable :: proc(text: string) -> string {
+	needs_escape := false
+	for index := 0; index < len(text); {
+		character, size := utf8.decode_rune_in_string(text[index:])
+		if needs_escaping(character, size) {
+			needs_escape = true
+			break
+		}
+		index += size
+	}
+
+	if !needs_escape {
 		return text
 	}
-	return strings.concatenate({color, text, ANSI_RESET}, context.temp_allocator)
+
+	builder := strings.builder_make(context.temp_allocator)
+	for index := 0; index < len(text); {
+		character, size := utf8.decode_rune_in_string(text[index:])
+		switch {
+		case character == utf8.RUNE_ERROR && size == 1:
+			fmt.sbprintf(&builder, "\\x%02X", text[index])
+		case !needs_escaping(character, size):
+			strings.write_string(&builder, text[index:index + size])
+		case character < 0x100:
+			fmt.sbprintf(&builder, "\\x%02X", int(character))
+		case:
+			fmt.sbprintf(&builder, "\\u{{%04X}}", int(character))
+		}
+		index += size
+	}
+	return strings.to_string(builder)
+}
+
+@(private = "file")
+needs_escaping :: proc(character: rune, size: int) -> bool {
+	switch {
+	case character == utf8.RUNE_ERROR && size == 1:
+		return true
+	case character == '\t':
+		return false
+	case character < 0x20, character == 0x7f, character >= 0x80 && character <= 0x9f:
+		return true
+	case character >= 0x202a && character <= 0x202e, character >= 0x2066 && character <= 0x2069:
+		return true
+	}
+	return false
+}
+
+// Replaces each string argument with its printable form. Painted text and
+// every other value pass through.
+@(private = "file")
+clean_arguments :: proc(arguments: []any) -> []any {
+	texts := make([]string, len(arguments), context.temp_allocator)
+	cleaned := make([]any, len(arguments), context.temp_allocator)
+	for argument, index in arguments {
+		cleaned[index] = argument
+		if argument.id == string {
+			texts[index] = printable((cast(^string)argument.data)^)
+			cleaned[index] = texts[index]
+		}
+	}
+	return cleaned
+}
+
+// Colors a word for standard output, such as the action of a plan line.
+paint :: proc(env: ^Env, color, text: string) -> Painted {
+	clean := printable(text)
+	if !stdout_colored(env) {
+		return Painted(clean)
+	}
+	return Painted(strings.concatenate({color, clean, ANSI_RESET}, context.temp_allocator))
 }
 
 // Formats a line for standard output, with values highlighted.
-styled :: proc(env: ^Env, format: string, arguments: ..any) -> string {
-	return fmt.aprintf(highlight(format, stdout_colored(env)), ..arguments)
+styled :: proc(env: ^Env, format: string, arguments: ..any) -> Painted {
+	return Painted(fmt.aprintf(highlight(format, stdout_colored(env)), ..clean_arguments(arguments)))
 }
 
 say :: proc(env: ^Env, format: string, arguments: ..any) {
 	progress_stop(env)
-	fmt.wprintfln(env.out, highlight(format, stdout_colored(env)), ..arguments)
+	fmt.wprintfln(env.out, highlight(format, stdout_colored(env)), ..clean_arguments(arguments))
 }
 
 // Writes a prompt without a newline, so the answer follows it.
 prompt :: proc(env: ^Env, format: string, arguments: ..any) {
 	progress_stop(env)
-	fmt.wprintf(env.out, highlight(format, stdout_colored(env)), ..arguments)
+	fmt.wprintf(env.out, highlight(format, stdout_colored(env)), ..clean_arguments(arguments))
 }
 
 // Writes `<icon>  <label>` before a message. The icon needs a terminal; the
@@ -133,7 +203,7 @@ success :: proc(env: ^Env, format: string, arguments: ..any) {
 	progress_stop(env)
 	colored := stdout_colored(env)
 	lead(env.out, env.style.stdout, colored, "✓", ANSI_GREEN, "krs:", ANSI_DIM)
-	fmt.wprintfln(env.out, highlight(format, colored), ..arguments)
+	fmt.wprintfln(env.out, highlight(format, colored), ..clean_arguments(arguments))
 }
 
 // Reports progress that is neither a result nor a problem.
@@ -141,21 +211,21 @@ info :: proc(env: ^Env, format: string, arguments: ..any) {
 	progress_stop(env)
 	colored := stdout_colored(env)
 	lead(env.out, env.style.stdout, colored, "•", ANSI_CYAN, "krs:", ANSI_DIM)
-	fmt.wprintfln(env.out, highlight(format, colored), ..arguments)
+	fmt.wprintfln(env.out, highlight(format, colored), ..clean_arguments(arguments))
 }
 
 warn :: proc(env: ^Env, format: string, arguments: ..any) {
 	progress_stop(env)
 	colored := stdout_colored(env)
 	lead(env.out, env.style.stdout, colored, "\uf071", ANSI_YELLOW, "warning:", ANSI_YELLOW)
-	fmt.wprintfln(env.out, highlight(format, colored), ..arguments)
+	fmt.wprintfln(env.out, highlight(format, colored), ..clean_arguments(arguments))
 }
 
 note :: proc(env: ^Env, format: string, arguments: ..any) {
 	progress_stop(env)
 	colored := stdout_colored(env)
 	lead(env.out, env.style.stdout, colored, "•", ANSI_CYAN, "note:", ANSI_CYAN)
-	fmt.wprintfln(env.out, highlight(format, colored), ..arguments)
+	fmt.wprintfln(env.out, highlight(format, colored), ..clean_arguments(arguments))
 }
 
 // Reports a failure and returns false, so a caller can `return fail(...)`.
@@ -163,7 +233,7 @@ fail :: proc(env: ^Env, format: string, arguments: ..any) -> bool {
 	progress_stop(env)
 	colored := stderr_colored(env)
 	lead(env.err, env.style.stderr, colored, "✕", ANSI_RED, "krs:", ANSI_DIM)
-	fmt.wprintfln(env.err, highlight(format, colored), ..arguments)
+	fmt.wprintfln(env.err, highlight(format, colored), ..clean_arguments(arguments))
 	return false
 }
 

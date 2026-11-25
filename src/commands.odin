@@ -379,7 +379,7 @@ Status_Row :: struct {
 	name:      string,
 	label:     string, // e.g. "installed v1.2.0"
 	color:     string, // ANSI_GREEN, ANSI_YELLOW, ANSI_CYAN or ANSI_DIM
-	notes:     [dynamic]string, // already painted, printed with %v
+	notes:     [dynamic]Painted, // already painted, printed with %v
 	attention: bool,
 }
 
@@ -515,7 +515,7 @@ command_status :: proc(env: ^Env, options: Options) -> bool {
 		for n in row.notes {
 			fmt.sbprintf(&b, "  %v", n)
 		}
-		say(env, "  %s%v %v%v", row.name, padding, paint(env, row.color, row.label), strings.to_string(b))
+		say(env, "  %s%v %v%v", row.name, padding, paint(env, row.color, row.label), Painted(strings.to_string(b)))
 	}
 
 	if attention > 0 {
