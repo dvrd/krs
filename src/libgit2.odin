@@ -73,6 +73,7 @@ foreign libgit2 {
 	git_oid_tostr :: proc(out: [^]byte, size: c.size_t, id: ^Git_Oid) -> cstring ---
 	git_object_free :: proc(object: ^Git_Object) ---
 	git_commit_tree :: proc(out: ^^Git_Tree, commit: ^Git_Object) -> c.int ---
+	git_commit_time :: proc(commit: ^Git_Object) -> i64 --- // git_time_t: seconds since the epoch
 
 	git_tree_walk :: proc(tree: ^Git_Tree, mode: c.int, visitor: Git_Tree_Visitor, payload: rawptr) -> c.int ---
 	git_tree_entry_name :: proc(entry: ^Git_Tree_Entry) -> cstring ---

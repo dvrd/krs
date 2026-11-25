@@ -75,6 +75,24 @@ git_resolve_tag :: proc(repo: ^Git_Repository, tag: string) -> (commit: ^Git_Obj
 	return
 }
 
+// Commit time (Unix seconds) of each tag's commit; tags that do not
+// resolve are left out.
+git_tag_times :: proc(repo: ^Git_Repository, tags: []string) -> (times: map[string]i64) {
+	assert(repo != nil)
+	for tag in tags {
+		commit, resolved := git_resolve_tag(repo, tag)
+		if !resolved {
+			continue
+		}
+
+		times[tag] = git_commit_time(commit)
+		git_object_free(commit)
+	}
+
+	assert(len(times) <= len(tags))
+	return
+}
+
 // Commits are 40 (SHA-1) or 64 (SHA-256) lowercase hexadecimal characters.
 is_commit_id :: proc(text: string) -> bool {
 	if len(text) != 40 && len(text) != 64 {
