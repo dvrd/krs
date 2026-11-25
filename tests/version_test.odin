@@ -1086,3 +1086,117 @@ resolution_touches_each_repository_once :: proc(t: ^testing.T) {
 		}
 	}
 }
+
+// Replaces the fixture's base directory, in its real and raw forms, with `<base>`.
+normalized :: proc(fixture: ^Fixture, text: string) -> string {
+	real, _ := os.get_absolute_path(fixture.base, context.allocator)
+	result, _ := strings.replace_all(text, real, "<base>")
+	result, _ = strings.replace_all(result, fixture.base, "<base>")
+	return result
+}
+
+// Expects a command's complete output, paths normalized.
+expect_output :: proc(fixture: ^Fixture, result: Result, out, err: string, loc := #caller_location) {
+	testing.expect_value(fixture.t, normalized(fixture, result.out), out, loc = loc)
+	testing.expect_value(fixture.t, normalized(fixture, result.err), err, loc = loc)
+}
+
+@(test)
+resolver_output_is_stable :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+
+	{
+		// A compatible difference takes the higher release.
+		fixture := fixture_make(t)
+		defer fixture_destroy(&fixture)
+		library_release(&fixture, "beta", "v0.4.0")
+		project_imports(&fixture, "beta")
+		expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
+		library_release(&fixture, "beta", "v0.4.2")
+		alpha_recording_beta(&fixture, "v1.0.0", "v0.4.2")
+		project_imports(&fixture, "alpha", "beta")
+
+		result := run(&fixture, "", "install", "--yes")
+		expect_ok(&fixture, result)
+		expect_output(
+			&fixture,
+			result,
+			"beta: v0.4.0 and v0.4.2 (wanted by alpha v1.0.0) are compatible; using v0.4.2\n" +
+			"krs will change <base>/root/shared:\n" +
+			"  install alpha v1.0.0 (from <base>/sources/alpha)\n" +
+			"  replace beta v0.4.0 with v0.4.2 (from <base>/sources/beta)\n" +
+			"krs: 2 installed, 0 already in place\n",
+			"",
+		)
+	}
+
+	{
+		// A breaking difference with nobody to ask stops with a report.
+		fixture := fixture_make(t)
+		defer fixture_destroy(&fixture)
+		library_release(&fixture, "beta", "v0.4.0")
+		project_imports(&fixture, "beta")
+		expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
+		library_release(&fixture, "beta", "v0.5.0")
+		alpha_recording_beta(&fixture, "v1.0.0", "v0.5.0")
+		project_imports(&fixture, "alpha", "beta")
+
+		result := run(&fixture, "", "install", "--yes")
+		expect_failure(&fixture, result, "needs a decision")
+		expect_output(
+			&fixture,
+			result,
+			"beta: v0.4.0 and v0.5.0 (wanted by alpha v1.0.0) are not compatible\n",
+			"krs: beta needs a decision between v0.4.0 and v0.5.0; run krs install in a terminal\n",
+		)
+	}
+
+	{
+		// Updating one package moves it past a dependant's record.
+		fixture := fixture_make(t)
+		defer fixture_destroy(&fixture)
+		library_release(&fixture, "beta", "v0.4.0")
+		alpha_recording_beta(&fixture, "v1.0.0", "v0.4.0")
+		library_release(&fixture, "gamma", "v0.1.0")
+		project_imports(&fixture, "alpha", "beta", "gamma")
+		expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
+		library_release(&fixture, "beta", "v0.4.1")
+		library_release(&fixture, "beta", "v0.5.0")
+
+		result := run(&fixture, "", "update", "beta", "--yes")
+		expect_ok(&fixture, result)
+		expect_output(
+			&fixture,
+			result,
+			"beta v0.4.0 -> v0.5.0 (breaking)\n" +
+			"  alpha v1.0.0 recorded beta v0.4.0\n" +
+			"note: alpha v1.0.0 recorded beta v0.4.0; v0.5.0 was asked for explicitly\n" +
+			"krs will change <base>/root/shared:\n" +
+			"  replace beta v0.4.0 with v0.5.0 (from <base>/sources/beta)\n" +
+			"krs: 1 installed, 2 already in place\n",
+			"",
+		)
+	}
+
+	{
+		// Unlinking with --restore installs the recorded release again.
+		fixture := fixture_make(t)
+		defer fixture_destroy(&fixture)
+		library_release(&fixture, "beta", "v0.1.0")
+		project_imports(&fixture, "beta")
+		expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
+		expect_ok(&fixture, run(&fixture, "", "link", "beta"))
+
+		result := run(&fixture, "", "unlink", "beta", "--restore", "--yes")
+		expect_ok(&fixture, result)
+		expect_output(
+			&fixture,
+			result,
+			"krs: restoring beta v0.1.0\n" +
+			"krs will change <base>/root/shared:\n" +
+			"  install beta v0.1.0 (from <base>/sources/beta)\n" +
+			"krs: 1 installed, 0 already in place\n",
+			"",
+		)
+	}
+}
