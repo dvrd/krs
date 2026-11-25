@@ -12,7 +12,7 @@ tasks:
     desc: Build the KRS binary
     cmds:
       - task: odin
-        vars: {ACTION: build, PACKAGE: cmd/krs, BINARY: krs, QUIET: '{{.QUIET}}'}
+        vars: {ACTION: build, PACKAGE: cmd/krs, BINARY: krs, OPT: '{{.OPT | default "speed"}}', QUIET: '{{.QUIET}}'}
 
   install:
     desc: Build KRS and install it in ~/.local/bin or KRS_INSTALL_DIR
@@ -24,9 +24,9 @@ tasks:
     desc: Run the KRS test suite
     cmds:
       - task: odin
-        vars: {ACTION: test, PACKAGE: tests, BINARY: krs-tests}
+        vars: {ACTION: test, PACKAGE: tests, BINARY: krs-tests, OPT: none}
       - task: odin
-        vars: {ACTION: test, PACKAGE: tools/version, BINARY: krs-version-tests}
+        vars: {ACTION: test, PACKAGE: tools/version, BINARY: krs-version-tests, OPT: none}
 
   version:
     desc: Print the release version
@@ -52,7 +52,7 @@ tasks:
     internal: true
     cmds:
       - task: odin
-        vars: {ACTION: build, PACKAGE: tools/version, BINARY: krs-version, QUIET: 'true'}
+        vars: {ACTION: build, PACKAGE: tools/version, BINARY: krs-version, OPT: none, QUIET: 'true'}
 
   toolchain:
     internal: true
@@ -70,7 +70,7 @@ tasks:
         out="${KRS_CHECK_DIR:-${TMPDIR:-/tmp}/krs-check}"
         git_libdir=$(pkg-config --variable=libdir libgit2)
         mkdir -p "$out"
-        odin {{.ACTION}} {{.PACKAGE}} -out:"$out/{{.BINARY}}" -vet -o:none \
+        odin {{.ACTION}} {{.PACKAGE}} -out:"$out/{{.BINARY}}" -vet -o:{{.OPT | default "none"}} \
           "-extra-linker-flags:-L\"$git_libdir\""
         if [ '{{.QUIET}}' != true ]; then
           printf 'krs: %s complete (%s/%s)\n' '{{.ACTION}}' "$out" '{{.BINARY}}'
