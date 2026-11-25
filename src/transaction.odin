@@ -245,7 +245,10 @@ transaction_commit :: proc(transaction: ^Transaction) -> bool {
 	}
 
 	journal_mark_settled(env, database, id) or_return
-	return journal_cleanup(env, database, id, changes)
+	if !journal_cleanup(env, database, id, changes) {
+		warn(env, "the changes were applied, but staging files remain; the next krs command will retry the cleanup")
+	}
+	return true
 }
 
 journal_change_valid :: proc(scope: Journal_Scope, change: Journal_Change) -> bool {
