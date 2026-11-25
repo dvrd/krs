@@ -10,6 +10,7 @@ Options :: struct {
 	frozen:  bool,
 	yes:     bool,
 	restore: bool, // `unlink` installs the recorded release in place of the link
+	repair:  bool, // `install` reinstalls packages whose files no longer match
 }
 
 Action :: enum {
@@ -29,6 +30,7 @@ Decision :: struct {
 	repository:             string,
 	installed_tag:          string, // the tag in `shared/` before this run, if krs installed one
 	forced:                 bool, // named explicitly by `update` or `unlink`
+	repair:                 bool, // reinstall at the recorded release; installed files were changed
 	recorded:               bool, // belongs in the project's `.krs/packages.json`
 	selection:              Selection,
 	has_selection:          bool,
@@ -355,8 +357,18 @@ decision_create :: proc(state: ^State, name: string) -> ^Decision {
 
 	hash, ok := hash_directory(directory)
 	if !ok || hash != record.hash {
-		append(&state.altered, name)
 		warn(state.env, "%s does not match the hash recorded for %s %s", directory, name, record.tag)
+		if state.options.repair {
+			// Clear the tag so `plan_request` resolves the recorded release
+			// again through `decision_set_tag`, which checks the commit.
+			decision.repair = true
+			decision.action = .Install
+			decision.tag = ""
+			decision.commit = ""
+			decision.hash = ""
+		} else {
+			append(&state.altered, name)
+		}
 	}
 
 	return decision
@@ -404,8 +416,14 @@ decision_set_tag :: proc(state: ^State, decision: ^Decision, tag, source, commit
 	record := manifest_find(&state.manifest, decision.name)
 	if record != nil && record.linked == "" && record.tag == chosen && record.commit == resolved &&
 	   os.is_directory(path_join(state.shared, decision.name)) {
-		decision.action = .Keep
-		decision.hash = record.hash
+		if !decision.repair {
+			decision.action = .Keep
+			decision.hash = record.hash
+		}
+	} else {
+		// A different release was chosen (for example a dependency wants a
+		// newer tag): this is a normal replace, not a repair.
+		decision.repair = false
 	}
 
 	return true
@@ -925,8 +943,35 @@ decision_stage :: proc(state: ^State, transaction: ^Transaction, decision: ^Deci
 	return true
 }
 
+// Lists the local changes a repair discards.
+plan_describe_repair :: proc(state: ^State, decision: ^Decision) {
+	directory := path_join(state.shared, decision.name)
+	changed, added, missing, ok := installed_differences(directory, decision.selection, decision.contents[:])
+	if !ok {
+		warn(state.env, "cannot list the files of %s; all of it is replaced", directory)
+		return
+	}
+
+	for file in changed {
+		say(state.env, "    %v shared/%s/%s", paint(state.env, ANSI_YELLOW, "changed"), decision.name, file)
+	}
+	for file in added {
+		say(state.env, "    %v shared/%s/%s", paint(state.env, ANSI_GREEN, "added"), decision.name, file)
+	}
+	for file in missing {
+		say(state.env, "    %v shared/%s/%s", paint(state.env, ANSI_RED, "missing"), decision.name, file)
+	}
+	warn(state.env, "%s: these local changes are discarded when the release is reinstalled", decision.name)
+}
+
 plan_describe :: proc(state: ^State, decision: ^Decision) {
 	from := paint(state.env, ANSI_DIM, fmt.tprintf("(from %s)", decision.repository))
+	if decision.repair {
+		say(state.env, "  %v %s %s %v", paint(state.env, ANSI_YELLOW, "repair"), decision.name, decision.tag, from)
+		plan_describe_repair(state, decision)
+		return
+	}
+
 	if decision.installed_tag == "" {
 		say(state.env, "  %v %s %s %v", paint(state.env, ANSI_GREEN, "install"), decision.name, decision.tag, from)
 		return

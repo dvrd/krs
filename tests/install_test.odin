@@ -285,6 +285,87 @@ altered_install_is_reported :: proc(t: ^testing.T) {
 }
 
 @(test)
+repair_reinstalls_an_altered_package :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	library_release(&fixture, "beta", "v0.1.0")
+	project_imports(&fixture, "beta")
+	expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
+
+	write_file(t, krs.path_join(fixture.shared, "beta/beta.odin"), "package beta\n\nEDITED :: true\n")
+	write_file(t, krs.path_join(fixture.shared, "beta/extra.txt"), "extra\n")
+
+	expect_failure(&fixture, run(&fixture, "", "install", "--repair"), "confirmation is needed")
+	expect_contains(&fixture, read_file(krs.path_join(fixture.shared, "beta/beta.odin")), "EDITED")
+
+	result := run(&fixture, "", "install", "--repair", "--yes")
+	expect_ok(&fixture, result)
+	expect_contains(&fixture, result.out, "repair beta v0.1.0")
+	expect_contains(&fixture, result.out, "changed shared/beta/beta.odin")
+	expect_contains(&fixture, result.out, "added shared/beta/extra.txt")
+	expect_contains(&fixture, result.out, "discarded when the release is reinstalled")
+
+	expect_release(&fixture, "beta", "v0.1.0")
+	testing.expect(t, !os.exists(krs.path_join(fixture.shared, "beta/extra.txt")))
+	expect_ok(&fixture, run(&fixture, "", "install", "--frozen"))
+}
+
+@(test)
+repair_leaves_intact_packages_alone :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	library_release(&fixture, "beta", "v0.1.0")
+	library_release(&fixture, "gamma", "v0.1.0")
+	project_imports(&fixture, "beta", "gamma")
+	expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
+
+	before := packages_text(&fixture)
+	write_file(t, krs.path_join(fixture.shared, "beta/beta.odin"), "package beta\n\nEDITED :: true\n")
+
+	result := run(&fixture, "", "install", "--repair", "--yes")
+	expect_ok(&fixture, result)
+	expect_contains(&fixture, result.out, "repair beta")
+	testing.expect(t, !strings.contains(result.out, "repair gamma"), result.out)
+	testing.expect_value(t, packages_text(&fixture), before)
+}
+
+@(test)
+repair_flag_is_rejected_elsewhere :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	misplaced := run(&fixture, "", "update", "--repair")
+	testing.expect_value(t, misplaced.code, krs.EXIT_USAGE)
+	expect_contains(&fixture, misplaced.err, "--repair only applies to install")
+
+	combined := run(&fixture, "", "install", "--repair", "--frozen")
+	testing.expect_value(t, combined.code, krs.EXIT_USAGE)
+	expect_contains(&fixture, combined.err, "cannot be combined")
+}
+
+@(test)
+repair_asks_in_a_terminal :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	library_release(&fixture, "beta", "v0.1.0")
+	project_imports(&fixture, "beta")
+	expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
+
+	write_file(t, krs.path_join(fixture.shared, "beta/beta.odin"), "package beta\n\nEDITED :: true\n")
+
+	expect_failure(&fixture, run(&fixture, "n\n", "install", "--repair"), "nothing was changed")
+	expect_ok(&fixture, run(&fixture, "y\n", "install", "--repair"))
+	expect_release(&fixture, "beta", "v0.1.0")
+}
+
+@(test)
 os_metadata_does_not_alter_an_install :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	fixture := fixture_make(t)

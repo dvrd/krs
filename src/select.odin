@@ -367,6 +367,42 @@ hash_directory :: proc(directory: string) -> (hash: string, ok: bool) {
 	return hasher_finish(&hasher), true
 }
 
+// Files that differ between an installed package and the release it records.
+installed_differences :: proc(
+	directory: string,
+	selection: Selection,
+	contents: [][]byte,
+) -> (changed, added, missing: [dynamic]string, ok: bool) {
+	assert(len(selection.files) == len(contents))
+	wanted: map[string]int
+	defer delete(wanted)
+	for file, index in selection.files {
+		wanted[file.install_path] = index
+	}
+
+	for file, index in selection.files {
+		data, err := os.read_entire_file(path_join(directory, file.install_path), context.allocator)
+		if err != nil {
+			append(&missing, file.install_path)
+		} else if !slice.equal(data, contents[index]) {
+			append(&changed, file.install_path)
+		}
+	}
+
+	on_disk: [dynamic]string
+	list_files(directory, "", .Installed, &on_disk) or_return
+	for file in on_disk {
+		if file not_in wanted {
+			append(&added, file)
+		}
+	}
+
+	slice.sort(changed[:])
+	slice.sort(added[:])
+	slice.sort(missing[:])
+	return changed, added, missing, true
+}
+
 // The `shared:` names imported by the Odin files under `directory`.
 scan_directory_imports :: proc(directory, own_name: string) -> (imports: [dynamic]string, ok: bool) {
 	files: [dynamic]string

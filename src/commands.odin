@@ -8,7 +8,7 @@ import "core:strconv"
 import "core:strings"
 
 USAGE_FORMAT :: `%[0]susage:%[1]s
-  krs %[0]sinstall%[1]s [--root=<path>] [--frozen] [--yes]
+  krs %[0]sinstall%[1]s [--root=<path>] [--frozen] [--repair] [--yes]
   krs %[0]sstatus%[1]s [--root=<path>]
   krs %[0]supdate%[1]s [<package>[@<tag>]] [--root=<path>] [--yes]
   krs %[0]sfetch%[1]s <owner>/<repo>
@@ -22,6 +22,7 @@ USAGE_FORMAT :: `%[0]susage:%[1]s
 
   %[0]s--root=<path>%[1]s  work on the shared/ of the Odin root at <path>
   %[0]s--frozen%[1]s       install exactly what .krs/packages.json says, or fail
+  %[0]s--repair%[1]s       reinstall packages whose installed files were changed
   %[0]s--restore%[1]s      after unlink, install the recorded release in its place
   %[0]s--yes%[1]s          do not ask before writing
 `
@@ -69,6 +70,8 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 			options.yes = true
 		case argument == "--restore":
 			options.restore = true
+		case argument == "--repair":
+			options.repair = true
 		case strings.has_prefix(argument, "--root="):
 			options.root = argument[len("--root="):]
 		case strings.has_prefix(argument, "-"):
@@ -81,6 +84,16 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 
 	if options.restore && (len(words) == 0 || words[0] != "unlink") {
 		fail(env, "--restore only applies to unlink")
+		return EXIT_USAGE
+	}
+
+	if options.repair && (len(words) == 0 || words[0] != "install") {
+		fail(env, "--repair only applies to install")
+		return EXIT_USAGE
+	}
+
+	if options.repair && options.frozen {
+		fail(env, "--repair and --frozen cannot be combined")
 		return EXIT_USAGE
 	}
 
