@@ -125,7 +125,7 @@ State :: struct {
 	tag_commits:      map[[2]string]string, // {path, tag} -> commit
 	selections:       map[[3]string]Release_Facts, // {path, commit, package name} -> selection and pins
 	installed_hashes: map[string]Installed_Hash, // package name -> hash of shared/<name>
-	fetched:          map[string]bool, // GitHub origins fetched in this command
+	fetched:          map[string]bool, // GitHub origin -> whether this command's one fetch succeeded
 	counts:           Resolution_Counts,
 	git_initialized:  bool, // libgit2 stays initialized until state_close
 }
@@ -377,13 +377,22 @@ repository_resolve :: proc(state: ^State, name, tag, source, commit: string, sou
 		// Fetch once per command, even if the fetch fails; a later pass
 		// reads the cache as this fetch left it.
 		assert(origin == github_origin(github))
-		if state.fetched[origin] {
+		if succeeded, attempted := state.fetched[origin]; attempted {
+			if !succeeded {
+				return {}, fail(
+					state.env,
+					"cannot fetch %s for %s; this command's fetch failed, run %s when online",
+					github_locator(github),
+					name,
+					fmt.tprintf("krs fetch %s", github_locator(github)),
+				)
+			}
 			return {}, fail(state.env, "the GitHub repository for %s did not provide tag %s", name, tag)
 		}
 
-		state.fetched[origin] = true
 		state.counts.fetches += 1
 		fetched := cache_github_repository(state.env, github)
+		state.fetched[origin] = fetched
 		// Even a failed fetch may have written to the cache.
 		repository_forget(state, github_cache_path(state.env, github))
 		if !fetched {

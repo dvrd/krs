@@ -375,3 +375,45 @@ configured_library_is_fetched_once_per_command :: proc(t: ^testing.T) {
 	expect_failure(&fixture, result, "did not provide tag v9.9.9")
 	testing.expect_value(t, github_fixture_downloads, 1)
 }
+
+github_fixture_failed_download :: proc(env: ^krs.Env, repo: ^krs.Git_Repository, directory, origin: string) -> bool {
+	github_fixture_downloads += 1
+	return krs.fail(env, "the fixture network is offline")
+}
+
+@(test)
+failed_fetch_is_reported_and_not_retried :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	write_file(t, krs.path_join(fixture.home, krs.CONFIG_PATH), fmt.aprintf(
+		"{{\"format\": 1, \"source_directories\": [\"%s\"], \"libs\": {{\"kessel\": {{\"source\": \"github\", \"target\": \"dvrd/project-kessel\"}}}}}}\n",
+		fixture.sources,
+	))
+
+	// A second level makes resolution take more than one pass.
+	library_release(&fixture, "gamma", "v0.1.0")
+	library_release(&fixture, "alpha", "v0.1.0", "gamma")
+	project_imports(&fixture, "alpha", "kessel")
+	write_file(t, krs.path_join(fixture.project, krs.PACKAGES_PATH),
+		`{"format":1,"packages":[{"name":"kessel","source":"https://github.com/dvrd/project-kessel.git","tag":"v1.0.0","commit":"0123456789abcdef0123456789abcdef01234567"}]}`)
+
+	out := strings.builder_make()
+	err := strings.builder_make()
+	env := krs.Env {
+		project       = fixture.project,
+		home          = fixture.home,
+		default_root  = fixture.root,
+		out           = strings.to_writer(&out),
+		err           = strings.to_writer(&err),
+		download_tags = github_fixture_failed_download,
+	}
+	github_fixture_downloads = 0
+	code := krs.run(&env, {"install", "--yes"})
+	result := Result{code = code, out = strings.to_string(out), err = strings.to_string(err)}
+
+	expect_failure(&fixture, result, "cannot fetch dvrd/project-kessel")
+	testing.expectf(t, !strings.contains(result.err, "did not provide tag"), "unexpected missing-tag error: %s", result.err)
+	testing.expect_value(t, github_fixture_downloads, 1)
+}
