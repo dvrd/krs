@@ -78,5 +78,10 @@ scope_unlock :: proc(locks: ^[2]^os.File) {
 }
 
 state_close :: proc(state: ^State) {
+	if state.git_initialized {
+		git_libgit2_shutdown()
+		state.git_initialized = false
+	}
+
 	scope_unlock(&state.locks)
 }

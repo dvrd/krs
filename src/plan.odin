@@ -103,6 +103,7 @@ State :: struct {
 	version_answers:  map[Version_Conflict]string,
 	version_question: Version_Conflict,
 	counts:           Resolution_Counts,
+	git_initialized:  bool, // libgit2 stays initialized until state_close
 }
 
 // The Odin root to work on: `--root`, else `ODIN_ROOT`, else `odin root`.
@@ -140,6 +141,10 @@ state_open :: proc(env: ^Env, options: Options) -> (state: ^State, ok: bool) {
 		state_close(state)
 	}
 	state_lock(state, root) or_return
+	if git_libgit2_init() < 0 {
+		return nil, fail(env, "cannot initialize libgit2")
+	}
+	state.git_initialized = true
 	journal_recover(env, state.scope) or_return
 	state.config = load_config(env) or_return
 	state.packages = load_packages(env) or_return
