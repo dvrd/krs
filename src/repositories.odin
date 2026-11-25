@@ -46,6 +46,43 @@ github_repository_from_origin :: proc(origin: string) -> (GitHub_Repository, boo
 	return github_repository(strings.trim_suffix(origin[len(GITHUB_ORIGIN):], ".git"))
 }
 
+// Accepts `git@github.com:o/r`, `ssh://git@github.com/o/r` and the same with
+// a numeric port. Call it before `strip_credentials`, without `?` or `#`.
+github_repository_from_ssh :: proc(address: string) -> (GitHub_Repository, bool) {
+	SCP_PREFIX :: "git@github.com:"
+	URL_PREFIX :: "ssh://git@github.com"
+
+	rest: string
+	if len(address) >= len(SCP_PREFIX) && strings.equal_fold(address[:len(SCP_PREFIX)], SCP_PREFIX) {
+		rest = address[len(SCP_PREFIX):]
+	} else if len(address) >= len(URL_PREFIX) && strings.equal_fold(address[:len(URL_PREFIX)], URL_PREFIX) {
+		rest = address[len(URL_PREFIX):]
+		if strings.has_prefix(rest, ":") {
+			digits := 0
+			for byte in transmute([]u8)rest[1:] {
+				if byte < '0' || byte > '9' {
+					break
+				}
+				digits += 1
+			}
+
+			if digits == 0 || len(rest) <= 1 + digits || rest[1 + digits] != '/' {
+				return {}, false
+			}
+			rest = rest[1 + digits:]
+		}
+
+		if !strings.has_prefix(rest, "/") {
+			return {}, false
+		}
+		rest = rest[1:]
+	} else {
+		return {}, false
+	}
+
+	return github_repository(strings.trim_suffix(rest, ".git"))
+}
+
 repository_store :: proc(env: ^Env) -> string {
 	return path_join(env.home, KRS_DATA_PATH + "/repos")
 }

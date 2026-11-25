@@ -133,6 +133,20 @@ source_never_carries_credentials :: proc(t: ^testing.T) {
 }
 
 @(test)
+ssh_github_origins_share_the_https_identity :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+
+	testing.expect_value(t, krs.source_identity("git@github.com:Owner/Repo.git"), "https://github.com/owner/repo.git")
+	testing.expect_value(t, krs.source_identity("git@github.com:owner/repo"), "https://github.com/owner/repo.git")
+	testing.expect_value(t, krs.source_identity("ssh://git@github.com/owner/repo.git"), "https://github.com/owner/repo.git")
+	testing.expect_value(t, krs.source_identity("ssh://git@github.com:22/owner/repo.git"), "https://github.com/owner/repo.git")
+	// Not GitHub: unchanged.
+	testing.expect_value(t, krs.source_identity("git@gitlab.com:o/r.git"), "git@gitlab.com:o/r.git")
+	// Malformed GitHub SSH address: unchanged, never a wrong repository.
+	testing.expect_value(t, krs.source_identity("git@github.com:onlyowner"), "git@github.com:onlyowner")
+}
+
+@(test)
 scanner_decodes_escapes_and_rejects_computed_load_paths :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 

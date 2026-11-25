@@ -3,6 +3,7 @@ package tests
 import "core:encoding/json"
 import "core:fmt"
 import "core:os"
+import "core:strings"
 import "core:testing"
 
 import krs "../src"
@@ -220,4 +221,27 @@ fetch_leaves_no_cache_entry_if_github_has_no_release :: proc(t: ^testing.T) {
 
 	github_fixture_release(&fixture, "dvrd", "beta", "v1.0.0")
 	expect_ok(&fixture, run(&fixture, "", "fetch", "dvrd/beta"))
+}
+
+@(test)
+ssh_clone_satisfies_a_pin_recorded_over_https :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	library_release(&fixture, "beta", "v1.0.0")
+	repository := krs.path_join(fixture.sources, "beta")
+	git(t, repository, "remote", "add", "origin", "https://github.com/dvrd/beta.git")
+	project_imports(&fixture, "beta")
+	expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
+	expect_contains(&fixture, packages_text(&fixture), "https://github.com/dvrd/beta.git")
+
+	git(t, repository, "remote", "set-url", "origin", "git@github.com:dvrd/beta.git")
+	other_root := krs.path_join(fixture.base, "other-root")
+	os.make_directory_all(other_root)
+	result := run(&fixture, "", "install", "--yes", fmt.aprintf("--root=%s", other_root))
+	expect_ok(&fixture, result)
+	testing.expect(t, !strings.contains(result.out, "skipped"), result.out)
+	expect_contains(&fixture, read_file(krs.path_join(other_root, "shared/beta/beta.odin")), "RELEASE :: \"v1.0.0\"")
+	expect_contains(&fixture, packages_text(&fixture), "https://github.com/dvrd/beta.git")
 }

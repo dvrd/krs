@@ -221,17 +221,27 @@ source_identity :: proc(address: string) -> string {
 		return SOURCE_LOCAL
 	}
 
+	suffix := strings.index_any(address, "?#")
+	bare := address[:suffix] if suffix >= 0 else address
+
 	if strings.index(address, "://") < 0 {
 		colon := strings.index_byte(address, ':')
 		slash := strings.index_byte(address, '/')
 		if colon < 0 || (slash >= 0 && slash < colon) {
 			return SOURCE_LOCAL
 		}
+
+		if repository, valid := github_repository_from_ssh(bare); valid {
+			return github_origin(repository)
+		}
 		return address // SCP-style SSH address.
 	}
 
-	suffix := strings.index_any(address, "?#")
-	clean := strip_credentials(address[:suffix] if suffix >= 0 else address)
+	if repository, valid := github_repository_from_ssh(bare); valid {
+		return github_origin(repository)
+	}
+
+	clean := strip_credentials(bare)
 	if repository, valid := github_repository_from_origin(clean); valid {
 		return github_origin(repository)
 	}
