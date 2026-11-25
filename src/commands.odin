@@ -12,12 +12,10 @@ USAGE_FORMAT :: `%[0]susage:%[1]s
       install the releases this project imports
   krs %[0]sstatus%[1]s [--root=<path>]
       list what the Odin root holds for this project
-  krs %[0]supdate%[1]s [--root=<path>] [--fetch]
-      list newer releases of this project's packages
-  krs %[0]supdate%[1]s <package>[@<tag>] [--root=<path>] [--fetch] [--yes]
-      install the latest release of a package, or the one named
-  krs %[0]supdate --all%[1]s [--root=<path>] [--fetch] [--yes]
-      update every package to its highest compatible release
+  krs %[0]supdate%[1]s [<package>[@<tag>]...] [options]
+      list newer releases; filter with names, -f, -x
+  krs %[0]supdate -u%[1]s <package>[@<tag>] [--root=<path>] [--yes]
+      install a newer release of one package
   krs %[0]sfetch%[1]s
       refresh the GitHub releases of the configured libraries
   krs %[0]sfetch%[1]s <owner>/<repo>
@@ -48,8 +46,23 @@ USAGE_FORMAT :: `%[0]susage:%[1]s
   %[0]s--repair%[1]s       reinstall packages whose installed files were changed
   %[0]s--restore%[1]s      after unlink, install the recorded release in its place
   %[0]s--fetch%[1]s        before checking, refresh the GitHub releases of the packages
-  %[0]s--all%[1]s          update every package to its highest compatible tag
   %[0]s--yes%[1]s          do not ask before writing
+
+  update options:
+  %[0]s-t, --target%[1]s <t>        latest, greatest, newest, minor, patch or semver
+  %[0]s-f, --filter%[1]s <p>        only names matching p (name, a,b, glob*, /regex/, !name)
+  %[0]s-x, --reject%[1]s <p>        skip names matching p
+  %[0]s--filter-version%[1]s <p>    only current versions matching p
+  %[0]s--reject-version%[1]s <p>    skip current versions matching p
+  %[0]s--format%[1]s <v,...>        group, lines, time, repo, diff, installed-version; no-<v> removes
+  %[0]s-j, --json-all%[1]s          print the new .krs/packages.json as JSON
+  %[0]s--json-upgraded%[1]s         print the upgrades as JSON
+  %[0]s--json-deps%[1]s             print the new package list as JSON
+  %[0]s-e, --error-level%[1]s <n>   2: exit 1 when upgrades are available
+  %[0]s-g, --global%[1]s            check every package of the Odin root
+  %[0]s--color%[1]s                 force colors
+  %[0]s-s, --silent%[1]s            print nothing; use the exit code
+  %[0]s-l, --loglevel%[1]s <l>      silent, error, minimal, warn, info or verbose
 `
 
 EXIT_OK :: 0
