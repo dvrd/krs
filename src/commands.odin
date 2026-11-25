@@ -10,12 +10,14 @@ USAGE_FORMAT :: `%[0]susage:%[1]s
   krs %[0]supdate%[1]s [<package>[@<tag>]] [--root=<path>] [--yes]
   krs %[0]sfetch%[1]s <owner>/<repo>
   krs %[0]slink%[1]s <package> [--root=<path>]
-  krs %[0]sunlink%[1]s <package> [--root=<path>] [--yes]
+  krs %[0]slink ls%[1]s [--root=<path>]
+  krs %[0]sunlink%[1]s <package> [--root=<path>] [--restore] [--yes]
   krs %[0]s--version%[1]s
   krs %[0]s--help%[1]s
 
   %[0]s--root=<path>%[1]s  work on the shared/ of the Odin root at <path>
   %[0]s--frozen%[1]s       install exactly what .krs/packages.json says, or fail
+  %[0]s--restore%[1]s      after unlink, install the recorded release in its place
   %[0]s--yes%[1]s          do not ask before writing
 `
 
@@ -27,7 +29,7 @@ RELEASE_TAG :: #load("VERSION", string)
 
 print_usage :: proc(output: io.Writer, colored: bool) {
 	if colored {
-		fmt.wprintf(output, USAGE_FORMAT, ANSI_RED, ANSI_RESET)
+		fmt.wprintf(output, USAGE_FORMAT, ANSI_VALUE, ANSI_RESET)
 	} else {
 		fmt.wprintf(output, USAGE_FORMAT, "", "")
 	}
@@ -42,11 +44,7 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 			return EXIT_FAILED
 		}
 
-		if env.style.stdout && env.style.color {
-			say(env, "krs " + ANSI_RED + "%s" + ANSI_RESET, tag)
-		} else {
-			say(env, "krs %s", tag)
-		}
+		say(env, "krs %s", tag)
 		return EXIT_OK
 	}
 
@@ -64,6 +62,8 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 			options.frozen = true
 		case argument == "--yes":
 			options.yes = true
+		case argument == "--restore":
+			options.restore = true
 		case strings.has_prefix(argument, "--root="):
 			options.root = argument[len("--root="):]
 		case strings.has_prefix(argument, "-"):
@@ -72,6 +72,11 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 		case:
 			append(&words, argument)
 		}
+	}
+
+	if options.restore && (len(words) == 0 || words[0] != "unlink") {
+		fail(env, "--restore only applies to unlink")
+		return EXIT_USAGE
 	}
 
 	if len(words) == 0 {
@@ -89,6 +94,8 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 		ok = command_update(env, options, words[1])
 	case words[0] == "fetch" && len(words) == 2 && options.root == "" && !options.frozen && !options.yes:
 		ok = command_fetch(env, words[1])
+	case words[0] == "link" && len(words) == 2 && words[1] == "ls":
+		ok = command_link_list(env, options)
 	case words[0] == "link" && len(words) == 2:
 		ok = command_link(env, options, words[1])
 	case words[0] == "unlink" && len(words) == 2:
@@ -125,7 +132,7 @@ command_outdated :: proc(env: ^Env, options: Options) -> bool {
 
 		repository, ok := repository_find(state, record.name, "", record.source)
 		if !ok {
-			say(env, "cannot check %s: no usable repository", record.name)
+			warn(env, "cannot check %s: no usable repository", record.name)
 			unavailable += 1
 			continue
 		}
@@ -134,7 +141,7 @@ command_outdated :: proc(env: ^Env, options: Options) -> bool {
 		current_version, current_ok := parse_tag(record.tag)
 		highest_version, _ := parse_tag(highest)
 		if !current_ok {
-			say(env, "cannot check %s: invalid installed tag %s", record.name, record.tag)
+			warn(env, "cannot check %s: invalid installed tag %s", record.name, record.tag)
 			unavailable += 1
 			continue
 		}
@@ -144,7 +151,7 @@ command_outdated :: proc(env: ^Env, options: Options) -> bool {
 		}
 
 		compatibility := version_compatibility(current_version, highest_version)
-		say(env, "%s %s -> %s (%s)", record.name, record.tag, highest, version_compatibility_label(compatibility))
+		say_version_change(env, record.name, record.tag, highest, compatibility)
 		found += 1
 	}
 
@@ -173,7 +180,7 @@ update_report_dependants :: proc(state: ^State, name, tag: string) {
 		defer git_release_close(release)
 		pins, problem := release_pins(release)
 		if problem != "" {
-			say(state.env, "warning: %s %s: %s %s", record.name, record.tag, PACKAGES_PATH, problem)
+			warn(state.env, "%s %s: %s %v", record.name, record.tag, PACKAGES_PATH, problem)
 			continue
 		}
 
@@ -233,7 +240,7 @@ command_update :: proc(env: ^Env, options: Options, target: string) -> bool {
 		compatibility = version_compatibility(old_version, new_version)
 	}
 
-	say(env, "%s %s -> %s (%s)", name, record.tag, tag, version_compatibility_label(compatibility))
+	say_version_change(env, name, record.tag, tag, compatibility)
 	update_report_dependants(state, name, tag)
 
 	append(&state.queue, Request{name = name, tag = tag, source = record.source, by = "krs update", kind = .Update, recorded = true})
@@ -241,6 +248,13 @@ command_update :: proc(env: ^Env, options: Options, target: string) -> bool {
 	plan_drain(state) or_return
 
 	return plan_apply(state)
+}
+
+// Prints `name from -> to (compatibility)` for an available or chosen update.
+say_version_change :: proc(env: ^Env, name, from, to: string, compatibility: Version_Compatibility) {
+	color := ANSI_GREEN if compatibility == .Compatible else ANSI_YELLOW
+	label := paint(env, color, version_compatibility_label(compatibility))
+	say(env, "%s %s %v %s (%v)", name, from, paint(env, ANSI_DIM, "->"), to, label)
 }
 
 // Finds the directory to link: the first `<source directory>/<name>` that has
@@ -256,7 +270,7 @@ link_find :: proc(state: ^State, name: string) -> (repository: string, ok: bool)
 			return candidate, true
 		}
 
-		report_once(state, fmt.aprintf("skipped %s: it has no src/", candidate))
+		report_once(state, "skipped %s: it has no src/", candidate)
 	}
 
 	return "", false
@@ -283,6 +297,14 @@ command_link :: proc(env: ^Env, options: Options, name: string) -> bool {
 	record := manifest_find(&state.manifest, name)
 	if record == nil && path_present(target) {
 		return fail(env, "%s is not managed by krs; remove it by hand before linking", target)
+	}
+
+	if record != nil && record.linked == source {
+		current, read_err := os.read_link(target, context.temp_allocator)
+		if read_err == nil && current == source {
+			info(env, "%s is already linked to %s; nothing to do", name, source)
+			return true
+		}
 	}
 
 	transaction := Transaction{env = env, scope = state.scope}
@@ -313,6 +335,76 @@ command_link :: proc(env: ^Env, options: Options, name: string) -> bool {
 	return true
 }
 
+// Lists the linked packages of the Odin root and what is wrong with each link.
+command_link_list :: proc(env: ^Env, options: Options) -> bool {
+	if options.frozen || options.yes {
+		return fail(env, "link ls takes only --root")
+	}
+
+	state := state_open(env, options) or_return
+	defer state_close(state)
+
+	width := 0
+	count := 0
+	for record in state.manifest.packages {
+		if record.linked != "" {
+			width = max(width, len(record.name))
+			count += 1
+		}
+	}
+
+	if count == 0 {
+		info(env, "no packages are linked in %s", state.shared)
+		return true
+	}
+
+	info(env, "%d linked in %s", count, state.shared)
+	broken := 0
+	for record in state.manifest.packages {
+		if record.linked == "" {
+			continue
+		}
+
+		padding := strings.repeat(" ", width - len(record.name), context.temp_allocator)
+		problem := link_problem(state.shared, record)
+		if problem == "" {
+			say(env, "  %s%v %v %s", record.name, padding, paint(env, ANSI_DIM, "->"), record.linked)
+		} else {
+			broken += 1
+			say(env, "  %s%v %v %s %v", record.name, padding, paint(env, ANSI_DIM, "->"), record.linked,
+				paint(env, ANSI_YELLOW, fmt.tprintf("(%s)", problem)))
+		}
+	}
+
+	if broken > 0 {
+		warn(env, "%d link(s) need attention; run %s to relink one", broken, "krs link <package>")
+	}
+	return true
+}
+
+// Describes what keeps a recorded link from working, or "" when it works.
+link_problem :: proc(shared: string, record: Manifest_Record) -> string {
+	target := path_join(shared, record.name)
+	if !path_present(target) {
+		return "missing from shared/"
+	}
+
+	current, err := os.read_link(target, context.temp_allocator)
+	if err != nil {
+		return "replaced by a directory"
+	}
+
+	if current != record.linked {
+		return fmt.tprintf("points to %s instead", current)
+	}
+
+	if !os.is_directory(record.linked) {
+		return "the source no longer exists"
+	}
+
+	return ""
+}
+
 // A linked `src/` is not filtered, so a file the code opens without naming it
 // works while linked and is missing once released.
 unlink_report_unnamed :: proc(state: ^State, name, repository: string) {
@@ -330,11 +422,11 @@ unlink_report_unnamed :: proc(state: ^State, name, repository: string) {
 	list_files(repository, "src", .Source, &files)
 	for file in files {
 		if !installed[file] {
-			say(state.env, "warning: %s is not named by any Odin file and will not be installed from a release", file)
+			warn(state.env, "%s is not named by any Odin file and will not be installed from a release", file)
 		}
 	}
 	for warning in selection.warnings {
-		say(state.env, "warning: %s", warning)
+		warn(state.env, "%v", warning)
 	}
 }
 
@@ -350,22 +442,21 @@ command_unlink :: proc(env: ^Env, options: Options, name: string) -> bool {
 		return fail(env, "%s is not linked in %s", name, state.shared)
 	}
 
-	unlink_report_unnamed(state, name, record.path)
-
 	tag, source, commit := record.tag, record.source, record.commit
 	pin := packages_find(&state.packages, name)
 	if pin != nil {
 		tag, source, commit = pin.tag, pin.source, pin.commit
 	}
 
-	if tag != "" {
-		say(env, "krs: restoring %s %s", name, tag)
+	if options.restore && tag != "" {
+		unlink_report_unnamed(state, name, record.path)
+		info(env, "restoring %s %s", name, tag)
 		append(&state.queue, Request{name = name, tag = tag, source = source, commit = commit, by = "krs unlink", kind = .Restore})
 		plan_drain(state) or_return
 		return plan_apply(state, .Preserve)
 	}
 
-	// There is no release to restore. Only remove the development link.
+	// Remove the development link and its record; `shared/` no longer has it.
 	target := path_join(state.shared, name)
 	transaction := Transaction{env = env, scope = state.scope}
 	defer transaction_close(&transaction)
@@ -375,6 +466,11 @@ command_unlink :: proc(env: ^Env, options: Options, name: string) -> bool {
 	stage_manifest(&transaction, state.shared, &state.manifest) or_return
 	transaction_commit(&transaction) or_return
 
-	success(env, "%s is unlinked; no version of it was recorded, so nothing was installed", name)
+	if tag == "" {
+		success(env, "%s is unlinked; no version of it was recorded, so nothing was installed", name)
+	} else {
+		success(env, "%s is unlinked and removed from %s", name, state.shared)
+		note(env, "run %s in a project that imports it to install a release again", "krs install")
+	}
 	return true
 }

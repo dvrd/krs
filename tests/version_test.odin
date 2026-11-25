@@ -288,6 +288,12 @@ link_and_unlink :: proc(t: ^testing.T) {
 	expect_contains(&fixture, manifest_text(&fixture), fmt.aprintf("\"linked\": \"%s\"", source))
 	testing.expect_value(t, packages_text(&fixture), recorded)
 
+	linked_again := run(&fixture, "", "link", "alpha")
+	expect_ok(&fixture, linked_again)
+	expect_contains(&fixture, linked_again.out, fmt.aprintf("alpha is already linked to %s", source))
+	testing.expect(t, !strings.contains(linked_again.out, "every project on this Odin root"))
+	testing.expect(t, krs.is_symbolic_link(link))
+
 	// An edit in the repository is what the compiler now sees.
 	write_file(t, krs.path_join(source, "alpha.odin"), "package alpha\n\nRELEASE :: \"working copy\"\n")
 	expect_release(&fixture, "alpha", "working copy")
@@ -300,12 +306,25 @@ link_and_unlink :: proc(t: ^testing.T) {
 	expect_failure(&fixture, run(&fixture, "", "install", "--frozen"), "alpha is linked")
 	expect_failure(&fixture, run(&fixture, "", "update", "alpha", "--yes"), "alpha is linked")
 
+	misplaced := run(&fixture, "", "install", "--restore")
+	testing.expect_value(t, misplaced.code, krs.EXIT_USAGE)
+	expect_contains(&fixture, misplaced.err, "--restore only applies to unlink")
+
+	// By default unlink only removes the link, even when a release is recorded.
+	removed := run(&fixture, "", "unlink", "alpha")
+	expect_ok(&fixture, removed)
+	expect_contains(&fixture, removed.out, "alpha is unlinked and removed")
+	testing.expect(t, !krs.path_present(link))
+	testing.expect(t, !strings.contains(manifest_text(&fixture), "\"alpha\""))
+	testing.expect_value(t, packages_text(&fixture), recorded)
+
+	expect_ok(&fixture, run(&fixture, "", "link", "alpha"))
 	linked_manifest := manifest_text(&fixture)
-	expect_failure(&fixture, run(&fixture, "", "unlink", "alpha"), "confirmation is needed")
+	expect_failure(&fixture, run(&fixture, "", "unlink", "alpha", "--restore"), "confirmation is needed")
 	testing.expect(t, krs.is_symbolic_link(link))
 	testing.expect_value(t, manifest_text(&fixture), linked_manifest)
 
-	unlinked := run(&fixture, "", "unlink", "alpha", "--yes")
+	unlinked := run(&fixture, "", "unlink", "alpha", "--restore", "--yes")
 	expect_ok(&fixture, unlinked)
 	expect_contains(&fixture, unlinked.out, "src/notes/design.md is not named by any Odin file")
 	expect_contains(&fixture, unlinked.out, "src/assets/unused.js is not named by any Odin file")
@@ -336,7 +355,7 @@ unlink_refuses_a_moved_tag_and_preserves_the_link :: proc(t: ^testing.T) {
 	new_commit := library_release(&fixture, "beta", "v1.0.1")
 	git(t, krs.path_join(fixture.sources, "beta"), "tag", "--force", "v1.0.0", new_commit)
 
-	expect_failure(&fixture, run(&fixture, "", "unlink", "beta", "--yes"), "a published tag must not move")
+	expect_failure(&fixture, run(&fixture, "", "unlink", "beta", "--restore", "--yes"), "a published tag must not move")
 	testing.expect(t, krs.is_symbolic_link(krs.path_join(fixture.shared, "beta")))
 	testing.expect_value(t, manifest_text(&fixture), manifest)
 	testing.expect_value(t, packages_text(&fixture), packages)
@@ -361,4 +380,29 @@ link_needs_a_src_directory :: proc(t: ^testing.T) {
 	testing.expect(t, krs.is_symbolic_link(krs.path_join(fixture.shared, "fresh")))
 	expect_ok(&fixture, run(&fixture, "", "unlink", "fresh"))
 	testing.expect(t, !krs.path_present(krs.path_join(fixture.shared, "fresh")))
+}
+
+@(test)
+link_ls_lists_links_and_their_problems :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	empty := run(&fixture, "", "link", "ls")
+	expect_ok(&fixture, empty)
+	expect_contains(&fixture, empty.out, "no packages are linked")
+
+	write_file(t, krs.path_join(fixture.sources, "fresh/src/fresh.odin"), "package fresh\n")
+	write_file(t, krs.path_join(fixture.sources, "gone/src/gone.odin"), "package gone\n")
+	expect_ok(&fixture, run(&fixture, "", "link", "fresh"))
+	expect_ok(&fixture, run(&fixture, "", "link", "gone"))
+	testing.expect(t, os.remove(krs.path_join(fixture.shared, "gone")) == nil)
+
+	listed := run(&fixture, "", "link", "ls")
+	expect_ok(&fixture, listed)
+	expect_contains(&fixture, listed.out, "2 linked in")
+	expect_contains(&fixture, listed.out, fmt.aprintf("  fresh -> %s\n", krs.path_join(fixture.sources, "fresh/src")))
+	expect_contains(&fixture, listed.out, fmt.aprintf("  gone  -> %s (missing from shared/)", krs.path_join(fixture.sources, "gone/src")))
+	expect_contains(&fixture, listed.out, "1 link(s) need attention")
+	testing.expect(t, !krs.path_present(krs.path_join(fixture.shared, "ls")))
 }

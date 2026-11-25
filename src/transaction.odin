@@ -79,7 +79,7 @@ transaction_close :: proc(transaction: ^Transaction) {
 
 	for change in transaction.changes {
 		if err := os.remove_all(change.directory); err != nil && err != .Not_Exist {
-			say(transaction.env, "warning: cannot remove staging directory %s: %v", change.directory, err)
+			warn(transaction.env, "cannot remove staging directory %s: %v", change.directory, err)
 		}
 	}
 }
@@ -341,7 +341,7 @@ journal_recover_record :: proc(env: ^Env, database: ^db.SQLite_DB, current: Jour
 	switch record.phase {
 	case .Pending:
 		journal_revert(env, database, record.id, changes) or_return
-		say(env, "krs: restored the previous state after interrupted transaction %d", record.id)
+		info(env, "restored the previous state after interrupted transaction %d", record.id)
 	case .Settled:
 		journal_cleanup(env, database, record.id, changes) or_return
 	}

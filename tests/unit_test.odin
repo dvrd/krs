@@ -1,6 +1,7 @@
 package tests
 
 import "core:slice"
+import "core:strings"
 import "core:testing"
 
 import krs "../src"
@@ -143,4 +144,33 @@ COMPUTED :: #load("assets/" + NAME, string)
 	testing.expect(t, slice.equal(result.shared_imports[:], []string{"beta"}))
 	testing.expect(t, slice.equal(result.file_refs[:], []string{"asset file.txt"}))
 	testing.expect(t, slice.equal(result.unresolved[:], []string{"load"}))
+}
+
+@(test)
+output_highlights_string_values :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+
+	V :: krs.ANSI_VALUE
+	R :: krs.ANSI_RESET
+	testing.expect_value(t, krs.highlight("%s is at %s", false), "%s is at %s")
+	testing.expect_value(t, krs.highlight("%s is at %s", true), V + "%s" + R + " is at " + V + "%s" + R)
+	testing.expect_value(t, krs.highlight("%v, %d, 100%% and %-8s", true), "%v, %d, 100%% and " + V + "%-8s" + R)
+	testing.expect_value(t, krs.highlight("trailing %", true), "trailing %")
+
+	out := strings.builder_make()
+	env := krs.Env {
+		out   = strings.to_writer(&out),
+		style = {stdout = true, color = true},
+	}
+	krs.warn(&env, "%s is %v", "alpha", "stale")
+	testing.expect_value(
+		t,
+		strings.to_string(out),
+		krs.ANSI_YELLOW + "\uf071" + R + "  " + krs.ANSI_YELLOW + "warning:" + R + " " + V + "alpha" + R + " is stale\n",
+	)
+
+	strings.builder_reset(&out)
+	env.style = {}
+	krs.warn(&env, "%s is %v", "alpha", "stale")
+	testing.expect_value(t, strings.to_string(out), "warning: alpha is stale\n")
 }

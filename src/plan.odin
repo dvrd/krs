@@ -7,8 +7,9 @@ import "core:strings"
 
 Options :: struct {
 	root:   string,
-	frozen: bool,
-	yes:    bool,
+	frozen:  bool,
+	yes:     bool,
+	restore: bool, // `unlink` installs the recorded release in place of the link
 }
 
 Action :: enum {
@@ -129,7 +130,9 @@ state_open :: proc(env: ^Env, options: Options) -> (state: ^State, ok: bool) {
 	return state, true
 }
 
-report_once :: proc(state: ^State, message: string) {
+// Prints a message once per command, however often it comes up.
+report_once :: proc(state: ^State, format: string, arguments: ..any) {
+	message := styled(state.env, format, ..arguments)
 	for existing in state.reported {
 		if existing == message {
 			return
@@ -137,7 +140,7 @@ report_once :: proc(state: ^State, message: string) {
 	}
 
 	append(&state.reported, message)
-	say(state.env, "%s", message)
+	say(state.env, "%v", message)
 }
 
 repository_open :: proc(path: string, cached := false) -> (repository: Repository, reason: string) {
@@ -199,7 +202,7 @@ repository_candidate :: proc(state: ^State, path, tag, origin: string, cached :=
 	}
 
 	if reason != "" {
-		report_once(state, fmt.aprintf("skipped %s: %s", path, reason))
+		report_once(state, "skipped %s: %v", path, reason)
 		return {}, false
 	}
 	return repository, true
@@ -231,7 +234,7 @@ repository_find :: proc(state: ^State, name, tag, source: string) -> (repository
 				locator := github_repository(path_join(owner.name, name)) or_continue
 				candidate := repository_candidate(state, github_cache_path(state.env, locator), tag, github_origin(locator), true) or_continue
 				if ok {
-					report_once(state, fmt.aprintf("more than one cached GitHub repository matches %s; select one in config.json libs", name))
+					report_once(state, "more than one cached GitHub repository matches %s; select one in %s", name, "config.json libs")
 					return {}, false
 				}
 				repository, ok = candidate, true
@@ -284,7 +287,7 @@ repository_resolve :: proc(state: ^State, name, tag, source, commit: string) -> 
 	}
 
 	if pinned, valid := github_repository_from_origin(origin); valid {
-		say(state.env, "Use krs fetch %s to cache the recorded origin", github_locator(pinned))
+		note(state.env, "use %s to cache the recorded origin", fmt.tprintf("krs fetch %s", github_locator(pinned)))
 	}
 
 	if tag == "" {
@@ -334,7 +337,7 @@ decision_create :: proc(state: ^State, name: string) -> ^Decision {
 	hash, ok := hash_directory(directory)
 	if !ok || hash != record.hash {
 		append(&state.altered, name)
-		say(state.env, "warning: %s does not match the hash recorded for %s %s", directory, name, record.tag)
+		warn(state.env, "%s does not match the hash recorded for %s %s", directory, name, record.tag)
 	}
 
 	return decision
@@ -431,7 +434,7 @@ ask_version :: proc(env: ^Env, conflict: Version_Conflict) -> (chosen: string, o
 	say(env, "%s: %s and %s (wanted by %s) are not compatible", name, conflict.current, conflict.incoming, conflict.by)
 	say(env, "  keep %s: bring every package that uses %s %s up to it", higher, name, lower)
 	say(env, "  keep %s: adapt the package that wants %s to the older one, through krs link", lower, higher)
-	fmt.wprintf(env.out, "Which version of %s stays in shared/? [%s] ", name, higher)
+	prompt(env, "Which version of %s stays in shared/? %v ", name, paint(env, ANSI_DIM, fmt.tprintf("[%s]", higher)))
 
 	answer := ask_line(env)
 	switch answer {
@@ -481,7 +484,7 @@ decision_apply :: proc(state: ^State, decision: ^Decision, request: Request) -> 
 	}
 
 	if decision.forced {
-		say(state.env, "note: %s recorded %s %s; %s was asked for explicitly", request.by, decision.name, request.tag, decision.tag)
+		note(state.env, "%s recorded %s %s; %s was asked for explicitly", request.by, decision.name, request.tag, decision.tag)
 		return true
 	}
 
@@ -549,7 +552,7 @@ enqueue_dependencies :: proc(state: ^State, decision: ^Decision, recorded: bool,
 			problem: string
 			pins, problem = release_pins(release)
 			if problem != "" {
-				return fail(state.env, "%s: %s %s", by, PACKAGES_PATH, problem)
+				return fail(state.env, "%s: %s %v", by, PACKAGES_PATH, problem)
 			}
 		} else if decision.action == .Keep {
 			read_ok: bool
@@ -731,7 +734,7 @@ decision_prepare :: proc(state: ^State, decision: ^Decision) -> bool {
 		return fail(state.env, "%s %s does not match the content hash this project recorded", decision.name, decision.tag)
 	}
 	for warning in decision.selection.warnings {
-		say(state.env, "warning: %s %s: %s", decision.name, decision.tag, warning)
+		warn(state.env, "%s %s: %v", decision.name, decision.tag, warning)
 	}
 
 	return true
@@ -830,12 +833,13 @@ decision_stage :: proc(state: ^State, transaction: ^Transaction, decision: ^Deci
 }
 
 plan_describe :: proc(state: ^State, decision: ^Decision) {
+	from := paint(state.env, ANSI_DIM, fmt.tprintf("(from %s)", decision.repository))
 	if decision.installed_tag == "" {
-		say(state.env, "  install %s %s (from %s)", decision.name, decision.tag, decision.repository)
+		say(state.env, "  %v %s %s %v", paint(state.env, ANSI_GREEN, "install"), decision.name, decision.tag, from)
 		return
 	}
 
-	say(state.env, "  replace %s %s with %s (from %s)", decision.name, decision.installed_tag, decision.tag, decision.repository)
+	say(state.env, "  %v %s %s with %s %v", paint(state.env, ANSI_YELLOW, "replace"), decision.name, decision.installed_tag, decision.tag, from)
 }
 
 plan_frozen_check :: proc(state: ^State, packages: ^Packages_File) -> bool {
@@ -882,7 +886,7 @@ plan_apply :: proc(state: ^State, project_pins := Project_Pins.Record) -> bool {
 	for record in state.manifest.packages {
 		decision := state.decisions[record.name]
 		if record.linked != "" && (decision == nil || decision.action == .Linked) {
-			say(state.env, "linked: %s -> %s", record.name, record.linked)
+			say(state.env, "%v %s %v %s", paint(state.env, ANSI_CYAN, "linked:"), record.name, paint(state.env, ANSI_DIM, "->"), record.linked)
 		}
 	}
 

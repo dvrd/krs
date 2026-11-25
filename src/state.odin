@@ -90,7 +90,7 @@ ask_line :: proc(env: ^Env) -> string {
 }
 
 ask_yes :: proc(env: ^Env, question: string) -> bool {
-	fmt.wprintf(env.out, "%s [y/N] ", question)
+	prompt(env, "%v %v ", question, paint(env, ANSI_DIM, "[y/N]"))
 	answer := strings.to_lower(ask_line(env))
 	return answer == "y" || answer == "yes"
 }
@@ -124,7 +124,7 @@ load_json :: proc(env: ^Env, path: string, value: ^$T) -> (found: bool, ok: bool
 	}
 
 	if problem := json_record_problem(data, value); problem != "" {
-		return false, fail(env, "%s %s", path, problem)
+		return false, fail(env, "%s %v", path, problem)
 	}
 
 	return true, true
@@ -173,7 +173,7 @@ load_config :: proc(env: ^Env) -> (config: Config, ok: bool) {
 	path := path_join(env.home, CONFIG_PATH)
 	found := load_json(env, path, &config) or_return
 	if !found {
-		say(env, "krs: no settings at %s: no source directories and no trusted owners", path)
+		info(env, "no settings at %s: no source directories and no trusted owners", path)
 	}
 
 	for &directory in config.source_directories {

@@ -39,7 +39,7 @@ JOURNAL_SCHEMA :: `
 journal_check :: proc(env: ^Env, action: string, error: db.Database_Error) -> bool {
 	if error.kind != .None {
 		details := error
-		return fail(env, "%s: %s (%v)", action, db.error_message(&details), error.sqlite_code)
+		return fail(env, "%v: %v (%v)", action, db.error_message(&details), error.sqlite_code)
 	}
 	return true
 }
