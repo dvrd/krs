@@ -423,6 +423,12 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 		env.level = min(env.level, Log_Level.Error)
 	}
 
+	// The chooser asks about a list it prints with `say`.
+	if options.update.interactive && env.level < .Minimal {
+		fail(env, "-i shows the upgrade list; it cannot be combined with --silent, --loglevel error|silent or --format lines")
+		return EXIT_USAGE
+	}
+
 	if options.repair && options.frozen {
 		fail(env, "--repair and --frozen cannot be combined")
 		return EXIT_USAGE

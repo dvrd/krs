@@ -1107,7 +1107,13 @@ update_choose_interactive :: proc(env: ^Env, candidates: []Update_Candidate, whi
 		}
 
 		prompt(env, "%v ", paint(env, ANSI_DIM, "toggle numbers, a for all, Enter to apply, q to quit:"))
-		answer := strings.to_lower(ask_line(env), context.temp_allocator)
+		line, ended := ask_line_ended(env)
+		answer := strings.to_lower(line, context.temp_allocator)
+		if ended && answer == "" {
+			// Input ended without Enter: nothing was submitted.
+			clear(&chosen)
+			return chosen, fail(env, "no upgrades were applied")
+		}
 
 		switch answer {
 		case "":

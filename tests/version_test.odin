@@ -1525,7 +1525,50 @@ update_interactive_skips_pinned :: proc(t: ^testing.T) {
 	expect_release(&fixture, "gamma", "v0.1.0")
 }
 
-COOLDOWN_OLD :: "2001-01-01 00:00:00 +0000"
+@(test)
+update_interactive_cancels_at_end_of_input :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	interactive_fixture(&fixture)
+	before := packages_text(&fixture)
+
+	// "1" toggles beta; input then ends without Enter.
+	expect_failure(&fixture, run(&fixture, "1", "update", "-i"), "no upgrades were applied")
+	testing.expect_value(t, packages_text(&fixture), before)
+	expect_release(&fixture, "beta", "v0.4.0")
+	expect_release(&fixture, "gamma", "v0.1.0")
+}
+
+@(test)
+update_interactive_needs_the_list :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	interactive_fixture(&fixture)
+
+	Row :: struct {
+		arguments: []string,
+		printed:   bool, // -s hides every message, usage errors included
+	}
+	table := []Row {
+		{{"update", "-i", "-s"}, false},
+		{{"update", "-i", "--loglevel", "error"}, true},
+		{{"update", "-i", "--format", "lines"}, true},
+	}
+	for row in table {
+		result := run(&fixture, "\n", ..row.arguments)
+		testing.expectf(t, result.code == krs.EXIT_USAGE, "%v: exit %d, want %d\nerr: %s", row.arguments, result.code, krs.EXIT_USAGE, result.err)
+		if row.printed {
+			expect_contains(&fixture, result.err, "-i shows the upgrade list")
+		}
+	}
+	expect_release(&fixture, "gamma", "v0.1.0")
+}
+
+COOLDOWN_OLD ::"2001-01-01 00:00:00 +0000"
 
 @(test)
 cooldown_falls_back_to_an_old_enough_release :: proc(t: ^testing.T) {

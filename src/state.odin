@@ -77,18 +77,29 @@ Env :: struct {
 }
 
 ask_line :: proc(env: ^Env) -> string {
+	line, _ := ask_line_ended(env)
+	return line
+}
+
+// Reads one answer line. `ended` is true when input ended before a newline.
+ask_line_ended :: proc(env: ^Env) -> (line: string, ended: bool) {
 	builder := strings.builder_make()
 	buffer: [1]byte
 
 	for {
 		count, err := io.read(env.input, buffer[:])
-		if err != nil || count == 0 || buffer[0] == '\n' {
+		if err != nil || count == 0 {
+			ended = true
+			break
+		}
+
+		if buffer[0] == '\n' {
 			break
 		}
 		strings.write_byte(&builder, buffer[0])
 	}
 
-	return strings.trim_space(strings.to_string(builder))
+	return strings.trim_space(strings.to_string(builder)), ended
 }
 
 ask_yes :: proc(env: ^Env, question: string) -> bool {
