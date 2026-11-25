@@ -364,10 +364,15 @@ journal_recover_record :: proc(
 	}
 
 	failed := Recover_Result.Blocked if record.phase == .Pending && in_scope else Recover_Result.Skipped
+	scope, project_missing, root_missing := journal_lock_scope(record.scope, current)
 	locks: [2]^os.File
 	defer scope_unlock(&locks)
-	if !scope_lock(env, record.scope, current, &locks) {
+	if !scope_lock(env, scope, current, &locks) {
 		return failed
+	}
+
+	if project_missing || root_missing {
+		return journal_recover_partial(env, database, current, record, changes, root_missing, failed)
 	}
 
 	switch record.phase {
@@ -380,6 +385,78 @@ journal_recover_record :: proc(
 		if !journal_cleanup(env, database, record.id, changes) {
 			return failed
 		}
+	}
+	return .Done
+}
+
+// A recorded directory outside the current scope that no longer exists cannot
+// be locked. The returned scope names a current directory in its place, which
+// scope_lock skips.
+journal_lock_scope :: proc(record, current: Journal_Scope) -> (scope: Journal_Scope, project_missing, root_missing: bool) {
+	assert(record.project != "")
+	assert(record.root != "")
+
+	scope = record
+	if record.project != current.project && record.project != current.root && !os.exists(record.project) {
+		scope.project = current.project
+		project_missing = true
+	}
+
+	if record.root != current.project && record.root != current.root && !os.exists(record.root) {
+		scope.root = current.root
+		root_missing = true
+	}
+	return scope, project_missing, root_missing
+}
+
+// Recovers a record when one of its directories outside the current scope is
+// gone. A missing project takes its lockfile with it, so that change needs no
+// revert. A missing Odin root may be an unmounted volume that comes back, so
+// the record and every staging directory stay until a full recovery.
+journal_recover_partial :: proc(
+	env: ^Env,
+	database: ^db.SQLite_DB,
+	current: Journal_Scope,
+	record: Journal_Record,
+	changes: []Journal_Change,
+	root_missing: bool,
+	failed: Recover_Result,
+) -> Recover_Result {
+	assert(len(changes) > 0)
+
+	// Restoring is idempotent, so a later full recovery can repeat it.
+	if record.phase == .Pending {
+		for index := len(changes) - 1; index >= 0; index -= 1 {
+			if journal_change_valid(current, changes[index]) && !journal_restore_change(env, changes[index]) {
+				return failed
+			}
+		}
+	}
+
+	if root_missing {
+		fail(env, "the Odin root %s of transaction %d is missing", record.scope.root, record.id)
+		return .Skipped
+	}
+
+	lockfile := path_join(record.scope.project, PACKAGES_PATH)
+	for change in changes {
+		if !journal_change_valid(current, change) && change.target != lockfile {
+			fail(env, "cannot recover %s of transaction %d from here", change.target, record.id)
+			return .Skipped
+		}
+	}
+
+	// As in journal_revert, a crash before the deletion leaves a settled record.
+	if record.phase == .Pending && !journal_mark_settled(env, database, record.id) {
+		return failed
+	}
+
+	if !journal_cleanup(env, database, record.id, changes) {
+		return failed
+	}
+
+	if record.phase == .Pending {
+		info(env, "restored the previous state after interrupted transaction %d", record.id)
 	}
 	return .Done
 }
