@@ -163,6 +163,32 @@ update_target_newest_uses_commit_time :: proc(t: ^testing.T) {
 }
 
 @(test)
+update_newest_skips_lower_versions :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	library_release_at(&fixture, "beta", "v1.2.0", "2020-01-01 00:00:00 +0000")
+	project_imports(&fixture, "beta")
+	expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
+	library_release_at(&fixture, "beta", "v1.3.0", "2021-01-01 00:00:00 +0000")
+	library_release_at(&fixture, "beta", "v1.1.0", "2022-01-01 00:00:00 +0000")
+
+	// v1.1.0 is the newest commit but lower than the current v1.2.0.
+	expect_contains(&fixture, check_update(&fixture, "-t", "newest"), "beta v1.2.0 -> v1.3.0")
+}
+
+@(test)
+update_rejects_an_empty_negation :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	expect_failure(&fixture, run(&fixture, "", "update", "--filter-version", "!"), "! is not a valid pattern")
+	expect_failure(&fixture, run(&fixture, "", "update", "--filter", "!"), "! is not a valid pattern")
+}
+
+@(test)
 update_filters :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	fixture := fixture_make(t)

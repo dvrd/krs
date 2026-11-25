@@ -427,6 +427,10 @@ update_query_make :: proc(env: ^Env, options: Options, names: []string) -> (quer
 	append(&reject_versions, ..options.update.reject_version[:])
 	for text in update_pattern_texts(options.update.filter[:]) {
 		if strings.has_prefix(text, "!") {
+			if len(text) == 1 {
+				return query, fail(env, "%s is not a valid pattern", text)
+			}
+
 			append(&rejects, text[1:])
 		} else {
 			append(&filters, text)
@@ -435,6 +439,10 @@ update_query_make :: proc(env: ^Env, options: Options, names: []string) -> (quer
 
 	for text in update_pattern_texts(options.update.filter_version[:]) {
 		if strings.has_prefix(text, "!") {
+			if len(text) == 1 {
+				return query, fail(env, "%s is not a valid pattern", text)
+			}
+
 			append(&reject_versions, text[1:])
 		} else {
 			append(&filter_versions, text)
@@ -507,6 +515,11 @@ update_choose :: proc(repository: ^Repository, current: Version, target: Update_
 	chosen_time: i64
 	for tag in repository.tags {
 		version := parse_tag(tag) or_continue
+		// A newer commit on a lower tag is not an upgrade.
+		if target == .Newest && version_compare(version, current) != .Higher {
+			continue
+		}
+
 		switch target {
 		case .Latest, .Greatest, .Newest:
 		case .Minor:
