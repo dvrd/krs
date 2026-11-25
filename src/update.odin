@@ -56,6 +56,16 @@ Update_Options :: struct {
 	json:           Update_Json,
 	error_level:    int, // 1 (default) or 2
 	global:         bool, // -g
+	install:        Install_Mode, // `update -u --install`: when to install
+	install_given:  bool, // --install was passed (a zero value is not enough)
+	pin:            bool, // `update -u --pin`: pin every chosen version
+}
+
+// When `krs update -u` installs what it chose.
+Install_Mode :: enum {
+	Prompt, // zero value = ncu's default: ask, or --yes
+	Always,
+	Never, // only .krs/packages.json is written
 }
 
 UPDATE_TARGET_NAMES :: [Update_Target]string {
@@ -89,7 +99,7 @@ LOG_LEVEL_NAMES :: [Log_Level]string {
 update_flag_takes_value :: proc(flag: string) -> bool {
 	switch flag {
 	case "-t", "--target", "-f", "--filter", "-x", "--reject", "--filter-version", "--reject-version",
-	     "--format", "-e", "--error-level", "-l", "--loglevel":
+	     "--format", "-e", "--error-level", "-l", "--loglevel", "--install":
 		return true
 	}
 	return false
@@ -103,7 +113,7 @@ update_flag_only :: proc(flag: string) -> bool {
 
 	switch flag {
 	case "-u", "--upgrade", "-j", "--json-all", "--json-upgraded", "--json-deps", "-g", "--global",
-	     "-s", "--silent":
+	     "-s", "--silent", "--pin":
 		return true
 	}
 	return false

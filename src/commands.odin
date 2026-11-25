@@ -197,6 +197,21 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 			}
 		case flag == "-g" || flag == "--global":
 			options.update.global = true
+		case flag == "--install":
+			switch value {
+			case "always":
+				options.update.install = .Always
+			case "never":
+				options.update.install = .Never
+			case "prompt":
+				options.update.install = .Prompt
+			case:
+				fail(env, "--install takes always, never or prompt")
+				return EXIT_USAGE
+			}
+			options.update.install_given = true
+		case flag == "--pin":
+			options.update.pin = true
 		case flag == "--color":
 			env.style.stdout = true
 			env.style.color = true
@@ -237,6 +252,45 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 
 	if update_flag != "" && (len(words) == 0 || words[0] != "update") {
 		fail(env, "%s only applies to update", update_flag)
+		return EXIT_USAGE
+	}
+
+	if options.update.upgrade && options.frozen {
+		fail(env, "--upgrade and --frozen cannot be combined")
+		return EXIT_USAGE
+	}
+
+	// Global candidates are root-only records; this project's lockfile must
+	// not receive them.
+	if options.update.upgrade && options.update.global {
+		fail(env, "-u and --global cannot be combined")
+		return EXIT_USAGE
+	}
+
+	if options.update.pin && !options.update.upgrade {
+		fail(env, "--pin only applies to update -u")
+		return EXIT_USAGE
+	}
+
+	if options.update.install_given && !options.update.upgrade {
+		fail(env, "--install only applies to update -u")
+		return EXIT_USAGE
+	}
+
+	// -u writes; it does not report. `--format` is accepted and ignored.
+	if options.update.upgrade && options.update.json != .None {
+		json_flags := [Update_Json]string {
+			.None     = "",
+			.All      = "--json-all",
+			.Upgraded = "--json-upgraded",
+			.Deps     = "--json-deps",
+		}
+		fail(env, "%s cannot be combined with -u", json_flags[options.update.json])
+		return EXIT_USAGE
+	}
+
+	if options.update.upgrade && options.update.error_level != 1 {
+		fail(env, "--error-level cannot be combined with -u")
 		return EXIT_USAGE
 	}
 
