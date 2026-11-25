@@ -9,14 +9,18 @@ Keep Git operations in-process through libgit2.
 
 ## Build, test, and install
 
-Install Task, Odin, libgit2, SQLite, and pkg-config. The Odin compiler used for
-the build needs `shared:kakunou` in its shared collection. The tests also use
-the Git CLI to create fixture repositories.
+Install Task, Odin, libgit2 1.2 or newer, SQLite, pkg-config, and the Git CLI.
+The tests use Git to create fixture repositories. The compiler's `shared/`
+directory must contain `kakunou`. Task reports the missing directory on startup.
+
+`ODIN_VERSION` records the tested compiler as `dev-YYYY-MM:<full commit>`.
+Task warns if the running compiler differs. Set `KRS_STRICT_TOOLCHAIN=1`
+to make a mismatch fail the build.
 
 - `task` or `task check` builds KRS and runs the suite.
-- `task build` builds the CLI and prints its path.
-- `task test` runs the suite on its own.
-- `task install` builds the CLI and installs it as `~/.local/bin/krs`.
+- `task build` builds the CLI with `-o:speed` and prints its path.
+- `task test` builds the tests with `-o:none` and runs them.
+- `task install` builds the same optimized CLI and installs it as `~/.local/bin/krs`.
 
 Set `KRS_CHECK_DIR` to choose the output directory. The default is
 `${TMPDIR:-/tmp}/krs-check`.
