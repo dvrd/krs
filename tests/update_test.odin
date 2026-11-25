@@ -729,7 +729,7 @@ update_install_always_still_asks_before_vendoring :: proc(t: ^testing.T) {
 }
 
 @(test)
-update_vendor_yes_then_upgrade_no :: proc(t: ^testing.T) {
+update_vendor_declined_changes_nothing :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	a := fixture_make(t)
 	defer fixture_destroy(&a)
@@ -737,10 +737,58 @@ update_vendor_yes_then_upgrade_no :: proc(t: ^testing.T) {
 	defer fixture_destroy(&b)
 
 	library_release(&a, "gamma", "v0.1.1")
-	result := run(&a, "y\nn\n", "update", "-u")
+	before := manifest_text(&a)
+	result := run(&a, "n\n", "update", "-u")
 	expect_failure(&a, result, "nothing was changed")
-	testing.expect(t, os.exists(krs.path_join(a.project, "vendor/beta")))
+	testing.expect(t, !os.exists(krs.path_join(a.project, krs.VENDOR_DIR)))
 	testing.expect_value(t, record_of(&a, "gamma").tag, "v0.1.0")
+	testing.expect_value(t, manifest_text(&a), before)
+}
+
+@(test)
+update_vendor_confirmed_once :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	a := fixture_make(t)
+	defer fixture_destroy(&a)
+	b := pinned_divergence(&a)
+	defer fixture_destroy(&b)
+
+	library_release(&a, "gamma", "v0.1.1")
+	before := manifest_text(&a)
+	result := run(&a, "y\n", "update", "-u")
+	expect_ok(&a, result)
+	expect_contains(&a, read_file(krs.path_join(a.project, "vendor/gamma/gamma.odin")), "RELEASE :: \"v0.1.1\"")
+	testing.expect_value(t, manifest_text(&a), before)
+	testing.expect_value(t, strings.count(result.out, "[y/N]"), 1)
+}
+
+@(test)
+update_vendor_not_created_when_discovery_fails :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	a := fixture_make(t)
+	defer fixture_destroy(&a)
+	b := pinned_divergence(&a)
+	defer fixture_destroy(&b)
+
+	library_release(&a, "gamma", "v0.1.1")
+	expect_failure(&a, run(&a, "", "update", "-u", "--yes", "gamma@v9.9.9"), "could not check")
+	testing.expect(t, !os.exists(krs.path_join(a.project, krs.VENDOR_DIR)))
+}
+
+@(test)
+update_vendor_not_created_when_nothing_is_chosen :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	a := fixture_make(t)
+	defer fixture_destroy(&a)
+	b := pinned_divergence(&a)
+	defer fixture_destroy(&b)
+
+	library_release(&a, "gamma", "v0.1.1")
+	// Every upgrade starts selected; `a` deselects them all, then Enter.
+	result := run(&a, "a\n\n", "update", "-i", "--interactive-select", "all")
+	expect_ok(&a, result)
+	expect_contains(&a, result.out, "no upgrades were chosen")
+	testing.expect(t, !os.exists(krs.path_join(a.project, krs.VENDOR_DIR)))
 }
 
 @(test)

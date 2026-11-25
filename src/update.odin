@@ -994,9 +994,10 @@ command_update_upgrade :: proc(env: ^Env, options: Options, names: []string) -> 
 
 	// The root's shared/ belongs to every project on it. When it holds another
 	// version of a package this project pins, this project moves to vendor/
-	// instead of changing the root under the other projects.
+	// instead of changing the root under the other projects. The move waits
+	// until there is a confirmed upgrade to apply.
+	divergent: ^Package_Record
 	if !state.vendored {
-		divergent: ^Package_Record
 		for &record in state.packages.packages {
 			installed := manifest_find(&state.manifest, record.name)
 			if record.pinned && installed != nil && installed.linked == "" && installed.tag != record.tag {
@@ -1009,24 +1010,19 @@ command_update_upgrade :: proc(env: ^Env, options: Options, names: []string) -> 
 		if divergent != nil && options.update.install == .Never {
 			note(env, "%s is pinned at %s but %s holds another version; run %s before installing", divergent.name, divergent.tag, state.shared, "krs vendor")
 		}
-
-		if divergent != nil && options.update.install != .Never {
-			vendor := path_join(state.scope.project, VENDOR_DIR)
-			note(env, "%s is pinned at %s but %s holds another version; this project moves to %s", divergent.name, divergent.tag, state.shared, vendor)
-			vendor_enter(state) or_return
-			plan_reset(state)
-		}
 	}
 
+	// Candidates come from the lockfile and the repositories, not from shared/,
+	// so they hold whether or not the project moves to vendor/ below.
 	found_candidates := update_candidates(state, query) or_return
 	// A package the cooldown holds in place has nothing to apply.
 	candidates := candidates_upgrading(found_candidates[:])
 	if options.update.pin {
 		// A named pinned package moves and is pinned again at the new version.
+		// update_apply records the pin, after any switch to vendor/.
 		for &candidate in candidates {
 			if candidate.pinned && slice.contains(query.names, candidate.name) {
 				candidate.pinned = false
-				state.pin_names[candidate.name] = true
 			}
 		}
 	}
@@ -1049,7 +1045,65 @@ command_update_upgrade :: proc(env: ^Env, options: Options, names: []string) -> 
 		state.options.yes = true
 	}
 
-	return update_apply(state, candidates[:], options)
+	if divergent == nil || options.update.install == .Never {
+		return update_apply(state, candidates[:], options)
+	}
+
+	planned := make([dynamic]Update_Candidate, context.temp_allocator)
+	for candidate in candidates {
+		if !candidate.pinned {
+			append(&planned, candidate)
+		}
+	}
+
+	if len(planned) == 0 {
+		// Nothing to apply: the root stays, and so does this project.
+		note(env, "%s is pinned at %s but %s holds another version; run %s to use vendor/", divergent.name, divergent.tag, state.shared, "krs vendor")
+		return update_apply(state, candidates[:], options)
+	}
+
+	update_announce(state, planned[:])
+	vendor := path_join(state.scope.project, VENDOR_DIR)
+	note(env, "%s is pinned at %s but %s holds another version; this project moves to %s", divergent.name, divergent.tag, state.shared, vendor)
+
+	// Only the command-line --yes answers this: Enter on the -i list and
+	// --install=always confirm the upgrades, not the move to vendor/.
+	if !options.yes {
+		if !env.interactive {
+			return fail(env, "confirmation is needed: run in a terminal, or pass --yes")
+		}
+
+		if !ask_yes(env, "Move to vendor/ and apply these upgrades?") {
+			return fail(env, "nothing was changed")
+		}
+	}
+
+	state.options.yes = true
+	vendor_enter(state) or_return
+	plan_reset(state)
+	return update_apply(state, candidates[:], options, announced = true)
+}
+
+// Prints the version change of every candidate that will move.
+update_announce :: proc(state: ^State, candidates: []Update_Candidate) {
+	for candidate in candidates {
+		if candidate.pinned {
+			continue
+		}
+
+		say_version_change(state.env, candidate.name, candidate.current, candidate.chosen, update_compatibility(candidate))
+	}
+}
+
+// How far a candidate moves; a current tag that does not parse counts as breaking.
+update_compatibility :: proc(candidate: Update_Candidate) -> Version_Compatibility {
+	current, current_ok := parse_tag(candidate.current)
+	if !current_ok {
+		return .Breaking
+	}
+
+	chosen, _ := parse_tag(candidate.chosen)
+	return version_compatibility(current, chosen)
 }
 
 // Whether an upgrade starts selected for `update -i`.
@@ -1166,7 +1220,8 @@ update_choose_interactive :: proc(env: ^Env, candidates: []Update_Candidate, whi
 // Moves every unpinned candidate to its chosen release in one plan. Pinned
 // candidates are listed as held and never moved. Confirmation reads
 // state.options.yes; callers must open the state with the same options.
-update_apply :: proc(state: ^State, candidates: []Update_Candidate, options: Options) -> bool {
+// With `announced`, the caller already printed the version changes.
+update_apply :: proc(state: ^State, candidates: []Update_Candidate, options: Options, announced := false) -> bool {
 	if options.yes {
 		state.options.yes = true
 	}
@@ -1178,13 +1233,9 @@ update_apply :: proc(state: ^State, candidates: []Update_Candidate, options: Opt
 			continue
 		}
 
-		compatibility := Version_Compatibility.Breaking
-		if current, current_ok := parse_tag(candidate.current); current_ok {
-			chosen, _ := parse_tag(candidate.chosen)
-			compatibility = version_compatibility(current, chosen)
+		if !announced {
+			say_version_change(state.env, candidate.name, candidate.current, candidate.chosen, update_compatibility(candidate))
 		}
-
-		say_version_change(state.env, candidate.name, candidate.current, candidate.chosen, compatibility)
 		update_report_dependants(state, candidate.name, candidate.chosen)
 		append(
 			&state.queue,
