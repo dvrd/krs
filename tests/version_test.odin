@@ -1524,3 +1524,64 @@ update_interactive_skips_pinned :: proc(t: ^testing.T) {
 	testing.expect(t, !strings.contains(squeeze(result.out), "gamma v0.1.0 -> v0.1.1"))
 	expect_release(&fixture, "gamma", "v0.1.0")
 }
+
+COOLDOWN_OLD :: "2001-01-01 00:00:00 +0000"
+
+@(test)
+cooldown_falls_back_to_an_old_enough_release :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	library_release_at(&fixture, "beta", "v1.0.0", COOLDOWN_OLD)
+	project_imports(&fixture, "beta")
+	expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
+	library_release_at(&fixture, "beta", "v1.0.1", "2001-02-01 00:00:00 +0000")
+	library_release(&fixture, "beta", "v1.1.0")
+
+	result := run(&fixture, "", "update", "--cooldown", "7")
+	expect_ok(&fixture, result)
+	listing := squeeze(result.out)
+	expect_contains(&fixture, listing, "beta v1.0.0 -> v1.0.1")
+	testing.expect(t, !strings.contains(listing, "v1.1.0"))
+
+	expect_ok(&fixture, run(&fixture, "", "update", "-u", "--cooldown", "7", "--yes"))
+	expect_release(&fixture, "beta", "v1.0.1")
+}
+
+@(test)
+cooldown_skips_a_package_with_only_young_releases :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	library_release_at(&fixture, "beta", "v1.0.0", COOLDOWN_OLD)
+	project_imports(&fixture, "beta")
+	expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
+	library_release(&fixture, "beta", "v1.0.1")
+
+	result := run(&fixture, "", "update", "--cooldown", "7d")
+	expect_ok(&fixture, result)
+	testing.expect(t, !strings.contains(squeeze(result.out), "-> v1.0.1"))
+
+	held := run(&fixture, "", "update", "--cooldown", "7d", "--format", "cooldown")
+	expect_ok(&fixture, held)
+	expect_contains(&fixture, squeeze(held.out), "cooldown beta v1.0.0 skips v1.0.1")
+}
+
+@(test)
+cooldown_periods_are_checked :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	for period in ([]string{"--cooldown=0", "--cooldown=7x", "--cooldown=d", "--cooldown=-7"}) {
+		result := run(&fixture, "", "update", period)
+		testing.expectf(t, result.code == krs.EXIT_USAGE, "%s should be a usage error: %s", period, result.err)
+		expect_contains(&fixture, result.err, "is not a cooldown period")
+	}
+
+	result := run(&fixture, "", "install", "--cooldown=7")
+	testing.expect_value(t, result.code, krs.EXIT_USAGE)
+	expect_contains(&fixture, result.err, "only applies to update")
+}
