@@ -836,7 +836,7 @@ command_status :: proc(env: ^Env, options: Options) -> bool {
 		info(env, "vendor mode: packages come from %s (build with %s)", state.shared, "-collection:shared=vendor")
 	}
 
-	imports, scanned := scan_directory_imports(env.project, path_base(env.project))
+	imports, scanned := scan_directory_imports(env.project, path_base(env.project), true)
 	if !scanned {
 		return fail(env, "cannot read the Odin files under %s", env.project)
 	}

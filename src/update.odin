@@ -938,7 +938,7 @@ command_update_upgrade :: proc(env: ^Env, options: Options, names: []string) -> 
 
 		pin := packages_find(&state.packages, name)
 		if pin == nil {
-			imports, scanned := scan_directory_imports(state.env.project, path_base(state.env.project))
+			imports, scanned := scan_directory_imports(state.env.project, path_base(state.env.project), true)
 			if !scanned {
 				return fail(env, "cannot read the Odin files under %s", state.env.project)
 			}

@@ -132,7 +132,7 @@ report_once :: proc(state: ^State, format: string, arguments: ..any) {
 // Queues one request for every `shared:` name the project imports.
 plan_discover :: proc(state: ^State) -> bool {
 	progress_start(state.env, "Scanning imports")
-	imports, ok := scan_directory_imports(state.env.project, path_base(state.env.project))
+	imports, ok := scan_directory_imports(state.env.project, path_base(state.env.project), true)
 	progress_stop(state.env)
 	if !ok {
 		return fail(state.env, "cannot read the Odin files under %s", state.env.project)

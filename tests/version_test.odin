@@ -1848,3 +1848,19 @@ doctor_flags_are_checked :: proc(t: ^testing.T) {
 	}
 	expect_release(&fixture, "beta", "v0.4.0")
 }
+
+@(test)
+nested_project_imports_stay_out_of_the_parent :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	library_release(&fixture, "beta", "v1.0.0")
+	library_release(&fixture, "gamma", "v1.0.0")
+	project_imports(&fixture, "beta")
+	write_file(t, krs.path_join(fixture.project, "tools/gen/main.odin"), "package main\n\nimport \"shared:gamma\"\n")
+	write_file(t, krs.path_join(fixture.project, "tools/gen/.krs/packages.json"), "{\"format\": 1, \"packages\": []}\n")
+	expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
+	expect_contains(&fixture, packages_text(&fixture), "\"beta\"")
+	testing.expect(t, !strings.contains(packages_text(&fixture), "\"gamma\""))
+}

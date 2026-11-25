@@ -376,7 +376,7 @@ enqueue_dependencies :: proc(state: ^State, decision: ^Decision, recorded: bool,
 		return true
 	case .Linked:
 		read_ok: bool
-		imports, read_ok = scan_directory_imports(path_join(state.shared, decision.name), decision.name)
+		imports, read_ok = scan_directory_imports(path_join(state.shared, decision.name), decision.name, false)
 		if !read_ok {
 			return fail(state.env, "cannot scan the installed files of %s", by)
 		}
@@ -404,7 +404,7 @@ enqueue_dependencies :: proc(state: ^State, decision: ^Decision, recorded: bool,
 			}
 		} else if decision.action == .Keep {
 			read_ok: bool
-			imports, read_ok = scan_directory_imports(path_join(state.shared, decision.name), decision.name)
+			imports, read_ok = scan_directory_imports(path_join(state.shared, decision.name), decision.name, false)
 			if !read_ok {
 				return fail(state.env, "cannot scan the installed files of %s", by)
 			}

@@ -37,8 +37,9 @@ File_Walk :: enum {
 
 // Installed files must be regular files and directories; installed walks skip
 // OS metadata files (is_os_metadata). Source walks ignore Git metadata, and
-// project scans also skip hidden directories.
-list_files :: proc(base, relative: string, walk: File_Walk, files: ^[dynamic]string) -> bool {
+// project scans also skip hidden directories and, with stop_at_projects,
+// nested projects (directories holding a lockfile).
+list_files :: proc(base, relative: string, walk: File_Walk, files: ^[dynamic]string, stop_at_projects := false) -> bool {
 	pending: [dynamic]string
 	defer delete(pending)
 	append(&pending, relative)
@@ -63,6 +64,12 @@ list_files :: proc(base, relative: string, walk: File_Walk, files: ^[dynamic]str
 				if walk != .Installed && (entry.name == ".git" || (walk == .Project && strings.has_prefix(entry.name, "."))) {
 					continue
 				}
+
+				// A nested project owns its imports.
+				if walk == .Project && stop_at_projects && os.exists(path_join(base, path_join(child, PACKAGES_PATH))) {
+					continue
+				}
+
 				append(&pending, child)
 			case:
 				if walk == .Installed {
@@ -404,9 +411,9 @@ installed_differences :: proc(
 }
 
 // The `shared:` names imported by the Odin files under `directory`.
-scan_directory_imports :: proc(directory, own_name: string) -> (imports: [dynamic]string, ok: bool) {
+scan_directory_imports :: proc(directory, own_name: string, stop_at_projects: bool) -> (imports: [dynamic]string, ok: bool) {
 	files: [dynamic]string
-	list_files(directory, "", .Project, &files) or_return
+	list_files(directory, "", .Project, &files, stop_at_projects) or_return
 	// A krs vendor/ holds this project's dependencies, not its own code.
 	skip_vendor := os.exists(path_join(path_join(directory, VENDOR_DIR), MANIFEST_PATH))
 
