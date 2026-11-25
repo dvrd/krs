@@ -388,3 +388,17 @@ local_origin_is_portable_and_legacy_pin_is_preserved :: proc(t: ^testing.T) {
 	expect_ok(&fixture, run(&fixture, "", "install", "--frozen"))
 	testing.expect_value(t, packages_text(&fixture), legacy)
 }
+
+@(test)
+config_ignores_retired_keys :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	text := fmt.aprintf("{{\"format\": 1, \"source_directories\": [\"%s\"], \"trusted_owners\": [\"someone\"]}}\n", fixture.sources)
+	write_file(t, krs.path_join(fixture.home, krs.CONFIG_PATH), text)
+
+	result := run(&fixture, "", "link", "ls")
+	expect_ok(&fixture, result)
+	testing.expect(t, !strings.contains(result.out, "no settings"), result.out)
+}

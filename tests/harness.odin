@@ -57,7 +57,7 @@ fixture_config :: proc(fixture: ^Fixture, directories: []string) {
 		append(&quoted, fmt.aprintf("\"%s\"", directory))
 	}
 
-	text := fmt.aprintf("{{\"format\": 1, \"source_directories\": [%s], \"trusted_owners\": []}}\n", strings.join(quoted[:], ", "))
+	text := fmt.aprintf("{{\"format\": 1, \"source_directories\": [%s]}}\n", strings.join(quoted[:], ", "))
 	write_file(fixture.t, krs.path_join(fixture.home, krs.CONFIG_PATH), text)
 }
 

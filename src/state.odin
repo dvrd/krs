@@ -54,7 +54,6 @@ Library_Source :: struct {
 Config :: struct {
 	format:             int,
 	source_directories: [dynamic]string,
-	trusted_owners:     [dynamic]string,
 	libs:               map[string]Library_Source,
 }
 
@@ -173,7 +172,7 @@ load_config :: proc(env: ^Env) -> (config: Config, ok: bool) {
 	path := path_join(env.home, CONFIG_PATH)
 	found := load_json(env, path, &config) or_return
 	if !found {
-		info(env, "no settings at %s: no source directories and no trusted owners", path)
+		info(env, "no settings at %s: no source directories and no libs", path)
 	}
 
 	for &directory in config.source_directories {
