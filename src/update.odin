@@ -64,6 +64,9 @@ Update_Options :: struct {
 	cooldown:       i64, // seconds; 0 = off
 	interactive:        bool, // `update -i`: choose upgrades before applying them
 	interactive_select: Interactive_Select, // which upgrades start selected
+	doctor:         bool, // `update -u --doctor`: test upgrades and keep the passing ones
+	doctor_test:    string, // shell command for the tests; "" means the default
+	doctor_install: string, // shell command run after each install; "" means none
 }
 
 // Which upgrades `update -i` selects before the person changes anything.
@@ -115,7 +118,7 @@ update_flag_takes_value :: proc(flag: string) -> bool {
 	switch flag {
 	case "-t", "--target", "-f", "--filter", "-x", "--reject", "--filter-version", "--reject-version",
 	     "--format", "-e", "--error-level", "-l", "--loglevel", "--install", "--interactive-select",
-	     "-c", "--cooldown":
+	     "-c", "--cooldown", "--doctor-test", "--doctor-install":
 		return true
 	}
 	return false
@@ -129,7 +132,7 @@ update_flag_only :: proc(flag: string) -> bool {
 
 	switch flag {
 	case "-u", "--upgrade", "-j", "--json-all", "--json-upgraded", "--json-deps", "-g", "--global",
-	     "-s", "--silent", "--pin", "-i", "--interactive":
+	     "-s", "--silent", "--pin", "-i", "--interactive", "-d", "--doctor":
 		return true
 	}
 	return false
@@ -914,6 +917,10 @@ update_print_json :: proc(state: ^State, all: []Update_Candidate, mode: Update_J
 // `krs update -u`: chooses upgrades like `krs update`, then writes them to
 // .krs/packages.json and installs them. Pinned packages never move.
 command_update_upgrade :: proc(env: ^Env, options: Options, names: []string) -> bool {
+	if options.update.doctor {
+		return command_update_doctor(env, options, names)
+	}
+
 	state := state_open(env, options) or_return
 	defer state_close(state)
 	query := update_query_make(env, options, names) or_return

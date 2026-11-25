@@ -1621,3 +1621,230 @@ cooldown_never_downgrades :: proc(t: ^testing.T) {
 	expect_ok(&fixture, run(&fixture, "", "update", "-u", "--cooldown", "7", "--yes"))
 	expect_release(&fixture, "beta", "v1.1.0")
 }
+
+// beta v0.4.0 and gamma v0.1.0 are installed for a project importing both;
+// then beta v0.5.0 and gamma v0.1.1 are released.
+upgrades_fixture :: proc(fixture: ^Fixture) {
+	library_release(fixture, "beta", "v0.4.0")
+	library_release(fixture, "gamma", "v0.1.0")
+	project_imports(fixture, "beta", "gamma")
+	expect_ok(fixture, run(fixture, "", "install", "--yes"))
+	library_release(fixture, "beta", "v0.5.0")
+	library_release(fixture, "gamma", "v0.1.1")
+}
+
+// A test command that fails while beta v0.5.0 is installed in `shared`.
+beta_breaks_on :: proc(shared: string) -> string {
+	return fmt.aprintf(`! grep -q 'RELEASE :: "v0.5.0"' %s/beta/beta.odin`, shared)
+}
+
+@(test)
+doctor_keeps_all_upgrades_when_tests_pass :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	upgrades_fixture(&fixture)
+
+	result := run(&fixture, "", "update", "-u", "--doctor", "--yes", "--doctor-test=true")
+	expect_ok(&fixture, result)
+	expect_release(&fixture, "beta", "v0.5.0")
+	expect_release(&fixture, "gamma", "v0.1.1")
+	expect_contains(&fixture, result.out, "pass the tests")
+}
+
+@(test)
+doctor_reverts_the_upgrade_that_breaks :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	upgrades_fixture(&fixture)
+
+	test := fmt.aprintf("--doctor-test=%s", beta_breaks_on(fixture.shared))
+	result := run(&fixture, "", "update", "-u", "--doctor", "--yes", test)
+	testing.expectf(t, result.code == 1, "exit %d\nout: %s\nerr: %s", result.code, result.out, result.err)
+	expect_release(&fixture, "beta", "v0.4.0")
+	expect_release(&fixture, "gamma", "v0.1.1")
+	packages := packages_text(&fixture)
+	expect_contains(&fixture, packages, "\"v0.4.0\"")
+	expect_contains(&fixture, packages, "\"v0.1.1\"")
+	testing.expect(t, !strings.contains(packages, "v0.5.0"))
+	expect_contains(&fixture, result.out, "breaks the tests")
+	expect_contains(&fixture, result.out, "passes the tests")
+}
+
+@(test)
+doctor_asks_for_consent_on_a_shared_root :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	upgrades_fixture(&fixture)
+	packages := packages_text(&fixture)
+	manifest := manifest_text(&fixture)
+
+	result := run(&fixture, "", "update", "-u", "--doctor", "--doctor-test=true")
+	expect_failure(&fixture, result, "confirmation is needed")
+	expect_contains(&fixture, result.out, "every project on this Odin root sees them")
+	testing.expect_value(t, packages_text(&fixture), packages)
+	testing.expect_value(t, manifest_text(&fixture), manifest)
+}
+
+@(test)
+doctor_runs_the_install_command :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	upgrades_fixture(&fixture)
+
+	result := run(&fixture, "", "update", "-u", "--doctor", "--yes", "--doctor-install=touch doctor-installed",
+		"--doctor-test=test -f doctor-installed")
+	expect_ok(&fixture, result)
+	testing.expect(t, os.exists(krs.path_join(fixture.project, "doctor-installed")))
+	expect_release(&fixture, "beta", "v0.5.0")
+}
+
+@(test)
+doctor_restores_the_lockfile_byte_for_byte :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	upgrades_fixture(&fixture)
+	packages := packages_text(&fixture)
+	manifest := manifest_text(&fixture)
+
+	either := fmt.aprintf(
+		"--doctor-test=! grep -q 'v0.5.0' %s/beta/beta.odin && ! grep -q 'v0.1.1' %s/gamma/gamma.odin",
+		fixture.shared,
+		fixture.shared,
+	)
+	result := run(&fixture, "", "update", "-u", "--doctor", "--yes", either)
+	testing.expectf(t, result.code == 1, "exit %d\nout: %s\nerr: %s", result.code, result.out, result.err)
+	testing.expect_value(t, packages_text(&fixture), packages)
+	testing.expect_value(t, manifest_text(&fixture), manifest)
+	expect_release(&fixture, "beta", "v0.4.0")
+	expect_release(&fixture, "gamma", "v0.1.0")
+
+	// beta v0.5.0 records gamma v0.1.1, so upgrading beta alone moves gamma
+	// too; the revert must move gamma back.
+	moved := fixture_make(t)
+	defer fixture_destroy(&moved)
+
+	library_release(&moved, "beta", "v0.4.0")
+	library_release(&moved, "gamma", "v0.1.0")
+	project_imports(&moved, "beta", "gamma")
+	expect_ok(&moved, run(&moved, "", "install", "--yes"))
+	library_release(&moved, "gamma", "v0.1.1")
+	library_recording(&moved, "beta", "v0.5.0", "gamma", "v0.1.1")
+	moved_packages := packages_text(&moved)
+
+	test := fmt.aprintf("--doctor-test=%s", beta_breaks_on(moved.shared))
+	only_beta := run(&moved, "", "update", "-u", "--doctor", "--yes", test, "beta")
+	testing.expectf(t, only_beta.code == 1, "exit %d\nout: %s\nerr: %s", only_beta.code, only_beta.out, only_beta.err)
+	expect_contains(&moved, only_beta.out, "breaks the tests")
+	// gamma is not a candidate: only beta's trial install moved it.
+	expect_contains(&moved, only_beta.out, "v0.1.1")
+	testing.expect_value(t, packages_text(&moved), moved_packages)
+	testing.expect(t, !strings.contains(packages_text(&moved), "v0.1.1"))
+	expect_release(&moved, "beta", "v0.4.0")
+	expect_release(&moved, "gamma", "v0.1.0")
+}
+
+@(test)
+doctor_reports_a_failed_restore :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	upgrades_fixture(&fixture)
+
+	// While beta v0.5.0 is installed, the tests fail and take beta's
+	// repository away, so the revert cannot find beta v0.4.0.
+	beta := krs.path_join(fixture.sources, "beta")
+	gone := krs.path_join(fixture.sources, "beta.gone")
+	test := fmt.aprintf(
+		"--doctor-test=if grep -q 'RELEASE :: \"v0.5.0\"' %s/beta/beta.odin; then mv %s %s; exit 1; fi",
+		fixture.shared,
+		beta,
+		gone,
+	)
+	result := run(&fixture, "", "update", "-u", "--doctor", "--yes", test)
+	testing.expectf(t, result.code == 1, "exit %d\nout: %s\nerr: %s", result.code, result.out, result.err)
+	expect_contains(&fixture, result.err, "could not restore the previous versions")
+	expect_contains(&fixture, result.err, "git checkout -- .krs/packages.json")
+
+	testing.expect(t, os.rename(gone, beta) == nil)
+	expect_ok(&fixture, run(&fixture, "", "install", "--frozen"))
+}
+
+@(test)
+doctor_tests_vendor_in_vendor_mode :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	upgrades_fixture(&fixture)
+	expect_ok(&fixture, run(&fixture, "", "vendor", "--yes"))
+	manifest := manifest_text(&fixture)
+
+	test := fmt.aprintf("--doctor-test=%s", beta_breaks_on(krs.path_join(fixture.project, krs.VENDOR_DIR)))
+	result := run(&fixture, "", "update", "-u", "--doctor", "--yes", test)
+	testing.expectf(t, result.code == 1, "exit %d\nout: %s\nerr: %s", result.code, result.out, result.err)
+	testing.expect(t, !strings.contains(result.out, "every project on this Odin root sees them"))
+	testing.expect_value(t, manifest_text(&fixture), manifest)
+	expect_contains(&fixture, read_file(krs.path_join(fixture.project, "vendor/beta/beta.odin")), "RELEASE :: \"v0.4.0\"")
+	expect_contains(&fixture, read_file(krs.path_join(fixture.project, "vendor/gamma/gamma.odin")), "RELEASE :: \"v0.1.1\"")
+	expect_release(&fixture, "beta", "v0.4.0")
+}
+
+@(test)
+doctor_needs_a_passing_baseline :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	upgrades_fixture(&fixture)
+	packages := packages_text(&fixture)
+	manifest := manifest_text(&fixture)
+
+	result := run(&fixture, "", "update", "-u", "--doctor", "--yes", "--doctor-test=false")
+	expect_failure(&fixture, result, "needs a passing baseline")
+	testing.expect_value(t, packages_text(&fixture), packages)
+	testing.expect_value(t, manifest_text(&fixture), manifest)
+	expect_release(&fixture, "beta", "v0.4.0")
+}
+
+@(test)
+doctor_flags_are_checked :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	upgrades_fixture(&fixture)
+
+	Misuse :: struct {
+		arguments: []string,
+		message:   string,
+	}
+	cases := []Misuse {
+		{{"update", "--doctor"}, "--doctor needs -u"},
+		{{"install", "--doctor"}, "--doctor only applies to update"},
+		{{"update", "-u", "--doctor-test=true"}, "--doctor-test needs --doctor"},
+		{{"update", "-u", "--doctor-install", "true"}, "--doctor-install needs --doctor"},
+		{{"update", "-u", "--doctor", "--install=never"}, "--install=never cannot be combined"},
+		{{"update", "-u", "--doctor", "--pin"}, "--doctor and --pin cannot be combined"},
+		{{"update", "-u", "--doctor", "-g"}, "--doctor and --global cannot be combined"},
+		{{"update", "-u", "--doctor", "-j"}, "JSON output cannot be combined"},
+		{{"update", "-u", "-d", "--json-upgraded"}, "JSON output cannot be combined"},
+		{{"update", "-i", "--doctor"}, "--doctor and -i cannot be combined"},
+	}
+	for misuse in cases {
+		result := run(&fixture, "", ..misuse.arguments)
+		testing.expectf(t, result.code == krs.EXIT_USAGE, "%v: exit %d, err: %s", misuse.arguments, result.code, result.err)
+		expect_contains(&fixture, result.err, misuse.message)
+	}
+	expect_release(&fixture, "beta", "v0.4.0")
+}

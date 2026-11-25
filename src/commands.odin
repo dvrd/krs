@@ -16,6 +16,8 @@ USAGE_FORMAT :: `%[0]susage:%[1]s
       list newer releases; filter with names, -f, -x
   krs %[0]supdate -u%[1]s [<package>[@<tag>]...] [--cooldown=<period>] [options]
       write the chosen versions to .krs/packages.json and install them
+  krs %[0]supdate -u --doctor%[1]s [--doctor-test=<cmd>] [--doctor-install=<cmd>] [options]
+      upgrade, run the tests and keep only the upgrades that pass
   krs %[0]supdate -i%[1]s [<package>...] [--interactive-select=<which>] [--root=<path>]
       choose which upgrades to take, then apply them
   krs %[0]sfetch%[1]s
@@ -57,6 +59,9 @@ USAGE_FORMAT :: `%[0]susage:%[1]s
   %[0]s-i, --interactive%[1]s       choose upgrades before applying them
   %[0]s--interactive-select%[1]s    auto, none, patch, minor or all: what starts selected
   %[0]s-c, --cooldown%[1]s <p>      ignore releases younger than this (7, 7d, 12h, 30m)
+  %[0]s-d, --doctor%[1]s            after upgrading, run the tests; keep only upgrades that pass
+  %[0]s--doctor-test%[1]s <cmd>     test command for --doctor (default: odin test .)
+  %[0]s--doctor-install%[1]s <cmd>  command run after each install for --doctor (default: none)
   %[0]s-t, --target%[1]s <t>        latest, greatest, newest, minor, patch or semver
   %[0]s-f, --filter%[1]s <p>        only names matching p (name, a,b, glob*, /regex/, !name)
   %[0]s-x, --reject%[1]s <p>        skip names matching p
@@ -113,6 +118,7 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 	update_flag := "" // the first update-only flag given, for the guard below
 	log_level: Maybe(Log_Level)
 	interactive_select_given := false
+	doctor_flag := "" // the first of --doctor-test and --doctor-install given
 
 	for index := 0; index < len(arguments); index += 1 {
 		argument := arguments[index]
@@ -248,6 +254,18 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 				return EXIT_USAGE
 			}
 			interactive_select_given = true
+		case flag == "-d" || flag == "--doctor":
+			options.update.doctor = true
+		case flag == "--doctor-test":
+			options.update.doctor_test = value
+			if doctor_flag == "" {
+				doctor_flag = flag
+			}
+		case flag == "--doctor-install":
+			options.update.doctor_install = value
+			if doctor_flag == "" {
+				doctor_flag = flag
+			}
 		case flag == "--color":
 			env.style.stdout = true
 			env.style.color = true
@@ -288,6 +306,44 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 
 	if update_flag != "" && (len(words) == 0 || words[0] != "update") {
 		fail(env, "%s only applies to update", update_flag)
+		return EXIT_USAGE
+	}
+
+	if options.update.doctor && !options.update.upgrade {
+		fail(env, "--doctor needs -u")
+		return EXIT_USAGE
+	}
+
+	if doctor_flag != "" && !options.update.doctor {
+		fail(env, "%s needs --doctor", doctor_flag)
+		return EXIT_USAGE
+	}
+
+	// Nothing would be installed, so every upgrade would pass the tests.
+	if options.update.doctor && options.update.install == .Never {
+		fail(env, "--doctor and --install=never cannot be combined")
+		return EXIT_USAGE
+	}
+
+	// A reverted package would stay pinned at its old tag.
+	if options.update.doctor && options.update.pin {
+		fail(env, "--doctor and --pin cannot be combined")
+		return EXIT_USAGE
+	}
+
+	// Global candidates may have no project record to restore.
+	if options.update.doctor && options.update.global {
+		fail(env, "--doctor and --global cannot be combined")
+		return EXIT_USAGE
+	}
+
+	if options.update.doctor && options.update.json != .None {
+		fail(env, "--doctor and JSON output cannot be combined")
+		return EXIT_USAGE
+	}
+
+	if options.update.doctor && options.update.interactive {
+		fail(env, "--doctor and -i cannot be combined")
 		return EXIT_USAGE
 	}
 
