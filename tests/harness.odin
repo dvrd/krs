@@ -77,6 +77,12 @@ read_file :: proc(path: string) -> string {
 }
 
 git :: proc(t: ^testing.T, directory: string, arguments: ..string) -> string {
+	return git_with_env(t, directory, nil, ..arguments)
+}
+
+// Like git, with `extra` environment entries added after the GIT_* variables
+// are removed, so a fixture can set commit dates.
+git_with_env :: proc(t: ^testing.T, directory: string, extra: []string, arguments: ..string) -> string {
 	command: [dynamic]string
 	append(&command, "git", "-C", directory)
 	append(&command, "-c", "user.name=krs", "-c", "user.email=krs@example.invalid")
@@ -95,6 +101,7 @@ git :: proc(t: ^testing.T, directory: string, arguments: ..string) -> string {
 		append(&isolated, entry)
 	}
 	append(&isolated, "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
+	append(&isolated, ..extra)
 
 	state, stdout, stderr, err := os.process_exec({command = command[:], env = isolated[:]}, context.allocator)
 	testing.expectf(t, err == nil && state.exit_code == 0, "git %v failed (%v, exit %d): %s", arguments, err, state.exit_code, string(stderr))
@@ -121,8 +128,20 @@ repository_release :: proc(fixture: ^Fixture, name, tag: string) -> string {
 	return git(fixture.t, path, "rev-parse", "HEAD")
 }
 
-// A one-file library whose constant shows which release was installed.
-library_release :: proc(fixture: ^Fixture, name, tag: string, imports: ..string) -> string {
+// Like repository_release, with both commit dates set (RFC 2822 or
+// "YYYY-MM-DD HH:MM:SS +0000").
+repository_release_at :: proc(fixture: ^Fixture, name, tag, date: string) -> string {
+	path := krs.path_join(fixture.sources, name)
+	dates := []string{fmt.tprintf("GIT_AUTHOR_DATE=%s", date), fmt.tprintf("GIT_COMMITTER_DATE=%s", date)}
+	git(fixture.t, path, "add", "-A")
+	git_with_env(fixture.t, path, dates, "commit", "--quiet", "--allow-empty", "-m", tag)
+	git(fixture.t, path, "tag", tag)
+
+	return git(fixture.t, path, "rev-parse", "HEAD")
+}
+
+// Writes the one-file library of library_release without committing it.
+library_write :: proc(fixture: ^Fixture, name, tag: string, imports: ..string) {
 	path := krs.path_join(fixture.sources, name)
 	if !os.is_directory(path) {
 		repository_make(fixture, name)
@@ -135,8 +154,18 @@ library_release :: proc(fixture: ^Fixture, name, tag: string, imports: ..string)
 	}
 	fmt.sbprintf(&source, "\nRELEASE :: \"%s\"\n", tag)
 	write_file(fixture.t, krs.path_join(path, fmt.aprintf("src/%s.odin", name)), strings.to_string(source))
+}
 
+// A one-file library whose constant shows which release was installed.
+library_release :: proc(fixture: ^Fixture, name, tag: string, imports: ..string) -> string {
+	library_write(fixture, name, tag, ..imports)
 	return repository_release(fixture, name, tag)
+}
+
+// Like library_release, with both commit dates set to `date`.
+library_release_at :: proc(fixture: ^Fixture, name, tag, date: string, imports: ..string) -> string {
+	library_write(fixture, name, tag, ..imports)
+	return repository_release_at(fixture, name, tag, date)
 }
 
 project_imports :: proc(fixture: ^Fixture, imports: ..string) {
