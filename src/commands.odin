@@ -227,6 +227,12 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 		return EXIT_USAGE
 	}
 
+	// JSON and `--format lines` are read by programs: only errors may be
+	// printed besides them, from the start (recovery reports included).
+	if options.update.json != .None || .Lines in options.update.format {
+		env.level = min(env.level, Log_Level.Error)
+	}
+
 	if options.repair && options.frozen {
 		fail(env, "--repair and --frozen cannot be combined")
 		return EXIT_USAGE
@@ -377,6 +383,14 @@ command_check :: proc(env: ^Env, options: Options, names: []string) -> bool {
 		return fail(env, "--frozen does not apply to update")
 	}
 
+	if options.update.global && options.update.json == .All {
+		return fail(env, "--json-all applies to a project, not --global")
+	}
+
+	if options.update.global && options.update.json == .Deps {
+		return fail(env, "--json-deps applies to a project, not --global")
+	}
+
 	query := Update_Query {
 		target     = options.update.target,
 		global     = options.update.global,
@@ -435,7 +449,11 @@ command_check :: proc(env: ^Env, options: Options, names: []string) -> bool {
 	state := state_open(env, options) or_return
 	defer state_close(state)
 	candidates := update_candidates(state, query) or_return
-	update_print(env, candidates[:], options.update)
+	if options.update.json != .None {
+		update_print_json(state, candidates[:], options.update.json) or_return
+	} else {
+		update_print(env, candidates[:], options.update)
+	}
 
 	// `-e 2` lets CI fail when an upgrade is available; it is not an error.
 	if options.update.error_level == 2 {

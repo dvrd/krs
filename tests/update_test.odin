@@ -1,5 +1,6 @@
 package tests
 
+import "core:encoding/json"
 import "core:fmt"
 import "core:strings"
 import "core:testing"
@@ -278,6 +279,12 @@ update_shows_pinned_packages_as_held :: proc(t: ^testing.T) {
 	testing.expect(t, !strings.contains(text, "->"))
 	testing.expect(t, !strings.contains(text, "krs update -u"))
 	testing.expect(t, !strings.contains(text, "Major"))
+
+	upgraded := run(&fixture, "", "update", "--json-upgraded")
+	expect_ok(&fixture, upgraded)
+	held: map[string]string
+	testing.expect_value(t, json.unmarshal(transmute([]byte)upgraded.out, &held), nil)
+	testing.expect_value(t, len(held), 0)
 }
 
 @(test)
@@ -484,4 +491,83 @@ update_log_levels :: proc(t: ^testing.T) {
 	testing.expect_value(t, quiet.code, krs.EXIT_FAILED)
 	testing.expect_value(t, quiet.out, "")
 	testing.expect_value(t, quiet.err, "")
+}
+
+// The first byte of `text` that is not white space, or 0.
+first_byte :: proc(text: string) -> byte {
+	trimmed := strings.trim_left_space(text)
+	return trimmed[0] if len(trimmed) > 0 else 0
+}
+
+@(test)
+update_json_outputs :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	library_release(&fixture, "beta", "v1.0.0")
+	library_release(&fixture, "gamma", "v1.0.0")
+	library_release(&fixture, "delta", "v1.0.0")
+	project_imports(&fixture, "beta", "gamma", "delta")
+	expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
+	expect_ok(&fixture, run(&fixture, "", "pin", "delta"))
+	beta_commit := library_release(&fixture, "beta", "v2.0.0")
+	library_release(&fixture, "delta", "v1.0.1")
+	recorded := packages_text(&fixture)
+
+	upgraded := run(&fixture, "", "update", "--json-upgraded")
+	expect_ok(&fixture, upgraded)
+	testing.expect_value(t, first_byte(upgraded.out), '{')
+	tags: map[string]string
+	testing.expect_value(t, json.unmarshal(transmute([]byte)upgraded.out, &tags), nil)
+	testing.expect_value(t, len(tags), 1)
+	testing.expect_value(t, tags["beta"], "v2.0.0")
+
+	whole := run(&fixture, "", "update", "-j")
+	expect_ok(&fixture, whole)
+	testing.expect_value(t, first_byte(whole.out), '{')
+	expect_contains(&fixture, whole.out, "\"tag\": \"v2.0.0\"")
+	testing.expect_value(t, strings.count(whole.out, "\"pinned\""), 1)
+	file: krs.Packages_File
+	testing.expect_value(t, json.unmarshal(transmute([]byte)whole.out, &file), nil)
+	testing.expect_value(t, file.format, krs.FORMAT)
+	testing.expect_value(t, len(file.packages), 3)
+	for record in file.packages {
+		switch record.name {
+		case "beta":
+			testing.expect_value(t, record.tag, "v2.0.0")
+			testing.expect_value(t, record.commit, beta_commit)
+			testing.expect_value(t, record.hash, "")
+		case "gamma":
+			testing.expect_value(t, record.tag, "v1.0.0")
+			testing.expect(t, record.hash != "")
+		case "delta":
+			testing.expect_value(t, record.tag, "v1.0.0")
+			testing.expect(t, record.pinned)
+		case:
+			testing.expectf(t, false, "unexpected package %s", record.name)
+		}
+	}
+	testing.expect_value(t, run(&fixture, "", "update", "--json-all").out, whole.out)
+
+	deps := run(&fixture, "", "update", "--json-deps")
+	expect_ok(&fixture, deps)
+	testing.expect_value(t, first_byte(deps.out), '[')
+	list: [dynamic]krs.Package_Record
+	testing.expect_value(t, json.unmarshal(transmute([]byte)deps.out, &list), nil)
+	testing.expect_value(t, len(list), 3)
+
+	// The listing changes nothing, and CI can still fail on upgrades.
+	testing.expect_value(t, packages_text(&fixture), recorded)
+	strict := run(&fixture, "", "update", "--json-upgraded", "-e", "2")
+	testing.expect_value(t, strict.code, krs.EXIT_FAILED)
+	testing.expect_value(t, strict.out, upgraded.out)
+
+	expect_failure(&fixture, run(&fixture, "", "update", "-j", "-g"), "--json-all applies to a project, not --global")
+
+	// Warnings stay off stdout; the failure goes to stderr.
+	fixture_config(&fixture, {krs.path_join(fixture.base, "other-sources")})
+	unavailable := run(&fixture, "", "update", "--json-upgraded")
+	expect_failure(&fixture, unavailable, "could not check")
+	testing.expect_value(t, unavailable.out, "")
 }

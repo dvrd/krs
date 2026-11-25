@@ -1,5 +1,6 @@
 package krs
 
+import "core:encoding/json"
 import "core:fmt"
 import "core:slice"
 import "core:strings"
@@ -613,4 +614,65 @@ update_print_row :: proc(env: ^Env, candidate: Update_Candidate, format: bit_set
 	colors := UPDATE_GROUP_COLORS
 	say(env, "  %s%v %v%v %v %v%v", candidate.name, name_padding, candidate.current, current_padding,
 		paint(env, ANSI_DIM, "->"), paint(env, colors[candidate.group], candidate.chosen), Painted(strings.to_string(extra)))
+}
+
+// Prints one JSON document: the upgrades as {name: tag}, or the
+// .krs/packages.json that `krs update -u` would write (or only its list).
+update_print_json :: proc(state: ^State, candidates: []Update_Candidate, mode: Update_Json) -> bool {
+	assert(mode != .None)
+	env := state.env
+	value: any
+	upgraded: map[string]string
+	file := Packages_File_Json{format = FORMAT}
+	if mode == .Upgraded {
+		for candidate in candidates {
+			if !candidate.pinned {
+				upgraded[candidate.name] = candidate.chosen
+			}
+		}
+		value = upgraded
+	} else {
+		// A copy: state.packages stays as the file on disk is.
+		copied := Packages_File{format = FORMAT}
+		append(&copied.packages, ..state.packages.packages[:])
+		for candidate in candidates {
+			if candidate.pinned {
+				continue
+			}
+
+			record := packages_find(&copied, candidate.name)
+			assert(record != nil)
+			repository, found := repository_find(state, candidate.name, candidate.chosen, candidate.source)
+			if !found {
+				return fail(env, "no usable repository for %s %s", candidate.name, candidate.chosen)
+			}
+
+			resolved := state_tag_commit(state, repository.path, candidate.name, candidate.chosen, "") or_return
+			record.tag = candidate.chosen
+			record.commit = resolved
+			record.hash = "" // computed at install
+		}
+
+		// The lockfile's own shape: `pinned` appears only on pinned records.
+		for record in copied.packages {
+			row := Package_Record_Json{name = record.name, source = record.source, tag = record.tag, commit = record.commit, hash = record.hash}
+			if record.pinned {
+				row.pinned = true
+			}
+			append(&file.packages, row)
+		}
+		if mode == .All {
+			value = file
+		} else {
+			value = file.packages
+		}
+	}
+
+	data, err := json.marshal(value, {pretty = true, use_spaces = true, spaces = 2, sort_maps_by_key = true})
+	if err != nil {
+		return fail(env, "cannot encode the upgrades as JSON: %v", err)
+	}
+
+	fmt.wprintln(env.out, string(data))
+	return true
 }
