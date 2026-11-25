@@ -1942,6 +1942,22 @@ update_deep_lists_every_project :: proc(t: ^testing.T) {
 }
 
 @(test)
+update_deep_resolves_a_relative_root :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	deep_fixture(&fixture)
+	// fixture.project is <base>/app and fixture.root is <base>/root.
+	result := run(&fixture, "", "update", "--deep", "--root=../root")
+	expect_ok(&fixture, result)
+	expect_contains(&fixture, result.out, "project .")
+	expect_contains(&fixture, result.out, "project tools/gen")
+	expect_contains(&fixture, result.out, "beta")
+	expect_contains(&fixture, result.out, "gamma")
+}
+
+@(test)
 update_deep_upgrades_each_lockfile :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	fixture := fixture_make(t)

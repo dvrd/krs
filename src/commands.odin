@@ -558,12 +558,31 @@ command_update_deep :: proc(env: ^Env, options: Options, words: []string) -> boo
 		return fail(env, "no project matches")
 	}
 
+	// state_open joins a relative root onto the project; every project here
+	// must get the root relative to where the command started.
+	deep_options := options
+	if deep_options.root != "" {
+		deep_options.root = path_expand_home(deep_options.root, env.home)
+		if !strings.has_prefix(deep_options.root, "/") {
+			deep_options.root = path_join(start, deep_options.root)
+		}
+	}
+
+	deep_default_root := env.default_root
+	if deep_default_root != "" {
+		deep_default_root = path_expand_home(deep_default_root, env.home)
+		if !strings.has_prefix(deep_default_root, "/") {
+			deep_default_root = path_join(start, deep_default_root)
+		}
+	}
+
 	all_ok := true
 	for project in selected {
 		relative := "." if project == start else project[len(start) + 1:]
 		say(env, "%v %s", paint(env, ANSI_CYAN, "project"), relative)
 		project_env := env^
 		project_env.project = project
+		project_env.default_root = deep_default_root
 		project_words := words
 		if len(words) > 1 {
 			used, usable := deep_used_words(&project_env, words)
@@ -579,7 +598,7 @@ command_update_deep :: proc(env: ^Env, options: Options, words: []string) -> boo
 			}
 		}
 
-		if !update_dispatch(&project_env, options, project_words) {
+		if !update_dispatch(&project_env, deep_options, project_words) {
 			all_ok = false
 		}
 	}
