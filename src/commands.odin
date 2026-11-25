@@ -299,6 +299,13 @@ command_link :: proc(env: ^Env, options: Options, name: string) -> bool {
 		return fail(env, "%s is not managed by krs; remove it by hand before linking", target)
 	}
 
+	if record != nil && record.linked != "" {
+		link, _ := link_state(state.shared, record^)
+		if link == .Directory || link == .File || link == .Elsewhere {
+			return fail(env, "%s is not the link krs made; run %s, remove it by hand, then link again", target, fmt.tprintf("krs unlink %s", name))
+		}
+	}
+
 	if record != nil && record.linked == source {
 		current, read_err := os.read_link(target, context.temp_allocator)
 		if read_err == nil && current == source {
@@ -366,42 +373,86 @@ command_link_list :: proc(env: ^Env, options: Options) -> bool {
 		}
 
 		padding := strings.repeat(" ", width - len(record.name), context.temp_allocator)
-		problem := link_problem(state.shared, record)
-		if problem == "" {
+		link, current := link_state(state.shared, record)
+		if link == .Working {
 			say(env, "  %s%v %v %s", record.name, padding, paint(env, ANSI_DIM, "->"), record.linked)
-		} else {
-			broken += 1
-			say(env, "  %s%v %v %s %v", record.name, padding, paint(env, ANSI_DIM, "->"), record.linked,
-				paint(env, ANSI_YELLOW, fmt.tprintf("(%s)", problem)))
+			continue
+		}
+
+		broken += 1
+		say(env, "  %s%v %v %s %v", record.name, padding, paint(env, ANSI_DIM, "->"), record.linked,
+			paint(env, ANSI_YELLOW, fmt.tprintf("(%s)", link_state_text(link, current))))
+		target := path_join(state.shared, record.name)
+		switch link {
+		case .Working:
+		case .Missing:
+			note(env, "run %s to recreate it, or %s to forget it", fmt.tprintf("krs link %s", record.name), fmt.tprintf("krs unlink %s", record.name))
+		case .Directory, .File, .Elsewhere:
+			note(env, "krs did not make %s; run %s to forget the link, remove it by hand, then %s", target, fmt.tprintf("krs unlink %s", record.name), fmt.tprintf("krs link %s", record.name))
+		case .Source_Missing:
+			note(env, "restore the checkout at %s, or run %s to remove the link", record.linked, fmt.tprintf("krs unlink %s", record.name))
 		}
 	}
 
 	if broken > 0 {
-		warn(env, "%d link(s) need attention; run %s to relink one", broken, "krs link <package>")
+		warn(env, "%d link(s) need attention", broken)
 	}
 	return true
 }
 
-// Describes what keeps a recorded link from working, or "" when it works.
-link_problem :: proc(shared: string, record: Manifest_Record) -> string {
+// What `shared/<name>` holds compared with the link krs recorded.
+Link_State :: enum {
+	Working,
+	Missing,        // nothing at shared/<name>
+	Directory,      // a real directory krs did not make
+	File,           // a regular file (or other non-link) krs did not make
+	Elsewhere,      // a symbolic link to a different path
+	Source_Missing, // krs's link, but the linked src/ is gone
+}
+
+link_state :: proc(shared: string, record: Manifest_Record) -> (state: Link_State, current: string) {
 	target := path_join(shared, record.name)
-	if !path_present(target) {
-		return "missing from shared/"
-	}
-
-	current, err := os.read_link(target, context.temp_allocator)
+	info, err := os.lstat(target, context.temp_allocator)
 	if err != nil {
-		return "replaced by a directory"
+		return .Missing, ""
 	}
 
+	if info.type == .Directory {
+		return .Directory, ""
+	}
+
+	if info.type != .Symlink {
+		return .File, ""
+	}
+
+	current, _ = os.read_link(target, context.temp_allocator)
 	if current != record.linked {
-		return fmt.tprintf("points to %s instead", current)
+		return .Elsewhere, current
 	}
 
 	if !os.is_directory(record.linked) {
-		return "the source no longer exists"
+		return .Source_Missing, current
 	}
 
+	return .Working, current
+}
+
+// The short text shown in parentheses for a state; "" when the link works.
+link_state_text :: proc(state: Link_State, current: string) -> string {
+	switch state {
+	case .Working:
+		return ""
+	case .Missing:
+		return "missing from shared/"
+	case .Directory:
+		return "replaced by a directory"
+	case .File:
+		return "replaced by a file"
+	case .Elsewhere:
+		return fmt.tprintf("points to %s instead", current)
+	case .Source_Missing:
+		return "the source no longer exists"
+	}
 	return ""
 }
 
@@ -448,7 +499,18 @@ command_unlink :: proc(env: ^Env, options: Options, name: string) -> bool {
 		tag, source, commit = pin.tag, pin.source, pin.commit
 	}
 
-	if options.restore && tag != "" {
+	target := path_join(state.shared, name)
+	link, _ := link_state(state.shared, record^)
+	unlink_command := fmt.tprintf("krs unlink %s", name)
+	if options.restore && tag == "" {
+		return fail(env, "%s has no recorded release to restore; run %s to remove the link", name, unlink_command)
+	}
+
+	if options.restore && (link == .Directory || link == .File || link == .Elsewhere) {
+		return fail(env, "%s is not the link krs made; run %s first and remove it by hand", target, unlink_command)
+	}
+
+	if options.restore {
 		unlink_report_unnamed(state, name, record.path)
 		info(env, "restoring %s %s", name, tag)
 		append(&state.queue, Request{name = name, tag = tag, source = source, commit = commit, by = "krs unlink", kind = .Restore})
@@ -457,14 +519,27 @@ command_unlink :: proc(env: ^Env, options: Options, name: string) -> bool {
 	}
 
 	// Remove the development link and its record; `shared/` no longer has it.
-	target := path_join(state.shared, name)
 	transaction := Transaction{env = env, scope = state.scope}
 	defer transaction_close(&transaction)
-	change := transaction_stage(&transaction, target, .Link, record.linked) or_return
-	change.staged = ""
+	if link == .Working || link == .Source_Missing {
+		change := transaction_stage(&transaction, target, .Link, record.linked) or_return
+		change.staged = ""
+	}
+
 	manifest_remove(&state.manifest, name)
 	stage_manifest(&transaction, state.shared, &state.manifest) or_return
 	transaction_commit(&transaction) or_return
+
+	if link == .Missing {
+		success(env, "%s is no longer recorded as linked", name)
+		return true
+	}
+
+	if link != .Working && link != .Source_Missing {
+		warn(env, "left %s in place; krs did not make it", target)
+		success(env, "%s is no longer recorded as linked", name)
+		return true
+	}
 
 	if tag == "" {
 		success(env, "%s is unlinked; no version of it was recorded, so nothing was installed", name)

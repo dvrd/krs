@@ -406,3 +406,149 @@ link_ls_lists_links_and_their_problems :: proc(t: ^testing.T) {
 	expect_contains(&fixture, listed.out, "1 link(s) need attention")
 	testing.expect(t, !krs.path_present(krs.path_join(fixture.shared, "ls")))
 }
+
+// Links `name` from a fresh source repository.
+link_fresh :: proc(fixture: ^Fixture, name: string) {
+	write_file(fixture.t, krs.path_join(fixture.sources, fmt.aprintf("%s/src/%s.odin", name, name)), fmt.aprintf("package %s\n", name))
+	expect_ok(fixture, run(fixture, "", "link", name))
+}
+
+@(test)
+link_ls_reports_each_broken_state_with_a_remedy :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	for name in ([]string{"gone", "dir", "file", "moved", "lost"}) {
+		link_fresh(&fixture, name)
+	}
+
+	testing.expect(t, os.remove(krs.path_join(fixture.shared, "gone")) == nil)
+
+	testing.expect(t, os.remove(krs.path_join(fixture.shared, "dir")) == nil)
+	testing.expect(t, os.make_directory(krs.path_join(fixture.shared, "dir")) == nil)
+
+	testing.expect(t, os.remove(krs.path_join(fixture.shared, "file")) == nil)
+	write_file(t, krs.path_join(fixture.shared, "file"), "x")
+
+	testing.expect(t, os.remove(krs.path_join(fixture.shared, "moved")) == nil)
+	testing.expect(t, os.symlink(fixture.sources, krs.path_join(fixture.shared, "moved")) == nil)
+
+	testing.expect(t, os.remove_all(krs.path_join(fixture.sources, "lost")) == nil)
+
+	listed := run(&fixture, "", "link", "ls")
+	expect_ok(&fixture, listed)
+	expect_contains(&fixture, listed.out, "(missing from shared/)")
+	expect_contains(&fixture, listed.out, "krs link gone")
+	expect_contains(&fixture, listed.out, "(replaced by a directory)")
+	expect_contains(&fixture, listed.out, "krs unlink dir")
+	expect_contains(&fixture, listed.out, "(replaced by a file)")
+	expect_contains(&fixture, listed.out, "points to")
+	expect_contains(&fixture, listed.out, "instead")
+	expect_contains(&fixture, listed.out, "(the source no longer exists)")
+	expect_contains(&fixture, listed.out, "5 link(s) need attention")
+	testing.expect(t, !strings.contains(listed.out, "to relink one"))
+}
+
+@(test)
+unlink_forgets_a_link_krs_did_not_make :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	link_fresh(&fixture, "dir")
+	directory := krs.path_join(fixture.shared, "dir")
+	testing.expect(t, os.remove(directory) == nil)
+	testing.expect(t, os.make_directory(directory) == nil)
+
+	result := run(&fixture, "", "unlink", "dir")
+	expect_ok(&fixture, result)
+	testing.expect(t, os.is_directory(directory))
+	testing.expect(t, !strings.contains(manifest_text(&fixture), "\"dir\""))
+	expect_contains(&fixture, result.out, "left")
+	expect_contains(&fixture, result.out, "krs did not make it")
+
+	expect_failure(&fixture, run(&fixture, "", "link", "dir"), "not managed by krs")
+}
+
+@(test)
+unlink_and_link_recover_a_missing_link :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	link_fresh(&fixture, "gone")
+	link := krs.path_join(fixture.shared, "gone")
+	testing.expect(t, os.remove(link) == nil)
+
+	expect_ok(&fixture, run(&fixture, "", "link", "gone"))
+	testing.expect(t, krs.is_symbolic_link(link))
+
+	testing.expect(t, os.remove(link) == nil)
+	result := run(&fixture, "", "unlink", "gone")
+	expect_ok(&fixture, result)
+	expect_contains(&fixture, result.out, "no longer recorded as linked")
+	testing.expect(t, !strings.contains(manifest_text(&fixture), "\"gone\""))
+}
+
+@(test)
+link_refuses_a_foreign_path_with_advice :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	link_fresh(&fixture, "file")
+	path := krs.path_join(fixture.shared, "file")
+	testing.expect(t, os.remove(path) == nil)
+	write_file(t, path, "x")
+
+	expect_failure(&fixture, run(&fixture, "", "link", "file"), "is not the link krs made")
+	testing.expect_value(t, read_file(path), "x")
+}
+
+@(test)
+unlink_restore_without_a_release_changes_nothing :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	link_fresh(&fixture, "fresh")
+	manifest := manifest_text(&fixture)
+
+	expect_failure(&fixture, run(&fixture, "", "unlink", "fresh", "--restore", "--yes"), "has no recorded release to restore")
+	testing.expect(t, krs.is_symbolic_link(krs.path_join(fixture.shared, "fresh")))
+	testing.expect_value(t, manifest_text(&fixture), manifest)
+}
+
+@(test)
+unlink_removes_a_link_whose_source_is_gone :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	link_fresh(&fixture, "lost")
+	testing.expect(t, os.remove_all(krs.path_join(fixture.sources, "lost")) == nil)
+
+	expect_ok(&fixture, run(&fixture, "", "unlink", "lost"))
+	testing.expect(t, !krs.path_present(krs.path_join(fixture.shared, "lost")))
+}
+
+@(test)
+unlink_restore_refuses_a_foreign_path :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	library_release(&fixture, "beta", "v1.0.0")
+	project_imports(&fixture, "beta")
+	expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
+	expect_ok(&fixture, run(&fixture, "", "link", "beta"))
+	directory := krs.path_join(fixture.shared, "beta")
+	testing.expect(t, os.remove(directory) == nil)
+	testing.expect(t, os.make_directory(directory) == nil)
+	manifest := manifest_text(&fixture)
+
+	expect_failure(&fixture, run(&fixture, "", "unlink", "beta", "--restore", "--yes"), "is not the link krs made")
+	testing.expect(t, os.is_directory(directory))
+	testing.expect_value(t, manifest_text(&fixture), manifest)
+}
