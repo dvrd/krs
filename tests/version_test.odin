@@ -253,6 +253,74 @@ update_moves_one_package :: proc(t: ^testing.T) {
 }
 
 @(test)
+update_refuses_a_package_this_project_does_not_use :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	library_release(&fixture, "beta", "v0.1.0")
+	project_imports(&fixture, "beta")
+	expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
+
+	other := fixture_make(t)
+	defer fixture_destroy(&other)
+	other.root = fixture.root
+	other.shared = fixture.shared
+	other.home = fixture.home
+	other.sources = fixture.sources
+	project_imports(&other)
+
+	library_release(&fixture, "beta", "v0.2.0")
+	expect_failure(&fixture, run(&other, "", "update", "beta", "--yes"), "is not used by this project")
+	expect_release(&fixture, "beta", "v0.1.0")
+	testing.expect(t, !os.exists(krs.path_join(other.project, krs.PACKAGES_PATH)))
+}
+
+@(test)
+update_moves_the_project_pin_when_the_root_is_already_there :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	a := fixture_make(t)
+	defer fixture_destroy(&a)
+
+	library_release(&a, "beta", "v0.1.0")
+	project_imports(&a, "beta")
+	expect_ok(&a, run(&a, "", "install", "--yes"))
+
+	b := fixture_make(t)
+	defer fixture_destroy(&b)
+	b.root = a.root
+	b.shared = a.shared
+	b.home = a.home
+	b.sources = a.sources
+	project_imports(&b, "beta")
+	expect_ok(&b, run(&b, "", "install", "--yes"))
+
+	library_release(&a, "beta", "v0.2.0")
+	expect_ok(&a, run(&a, "", "update", "beta", "--yes"))
+	expect_release(&a, "beta", "v0.2.0")
+
+	result := run(&b, "", "update", "beta", "--yes")
+	expect_ok(&b, result)
+	testing.expect(t, !strings.contains(result.out, "is already at"))
+	expect_contains(&b, read_file(krs.path_join(b.project, krs.PACKAGES_PATH)), "\"tag\": \"v0.2.0\"")
+}
+
+@(test)
+update_reports_already_at :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	library_release(&fixture, "beta", "v0.1.0")
+	project_imports(&fixture, "beta")
+	expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
+
+	result := run(&fixture, "", "update", "beta@v0.1.0", "--yes")
+	expect_ok(&fixture, result)
+	expect_contains(&fixture, result.out, "beta is already at v0.1.0")
+}
+
+@(test)
 update_listing_reports_unavailable_sources :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	fixture := fixture_make(t)

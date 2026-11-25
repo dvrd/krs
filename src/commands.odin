@@ -222,6 +222,18 @@ command_update :: proc(env: ^Env, options: Options, target: string) -> bool {
 		return fail(env, "%s is linked; run krs unlink %s first", name, name)
 	}
 
+	pin := packages_find(&state.packages, name)
+	if pin == nil {
+		imports, scanned := scan_directory_imports(state.env.project, path_base(state.env.project))
+		if !scanned {
+			return fail(env, "cannot read the Odin files under %s", state.env.project)
+		}
+
+		if !slice.contains(imports[:], name) {
+			return fail(env, "%s is not used by this project; run krs update in a project that imports it", name)
+		}
+	}
+
 	repository, found := repository_find(state, name, tag, record.source)
 	if !found {
 		return fail(env, "no usable repository for \"%s\" in the source directories or repository store", name)
@@ -231,20 +243,21 @@ command_update :: proc(env: ^Env, options: Options, target: string) -> bool {
 		tag, _ = highest_tag(repository.tags[:])
 	}
 
-	if tag == record.tag {
+	if tag == record.tag && (pin == nil || pin.tag == tag) {
 		repository_tag_commit(env, repository.path, name, tag, record.commit) or_return
 		success(env, "%s is already at %s", name, tag)
 		return true
 	}
 
-	old_version, old_ok := parse_tag(record.tag)
+	from := pin.tag if pin != nil else record.tag
+	old_version, old_ok := parse_tag(from)
 	new_version, _ := parse_tag(tag)
 	compatibility := Version_Compatibility.Breaking
 	if old_ok {
 		compatibility = version_compatibility(old_version, new_version)
 	}
 
-	say_version_change(env, name, record.tag, tag, compatibility)
+	say_version_change(env, name, from, tag, compatibility)
 	update_report_dependants(state, name, tag)
 
 	append(&state.queue, Request{name = name, tag = tag, source = record.source, by = "krs update", kind = .Update, recorded = true})
