@@ -305,6 +305,75 @@ update_patterns_match :: proc(patterns: []Update_Pattern, text: string) -> bool 
 	return false
 }
 
+// Builds the query `krs update` checks from the parsed options and the
+// positional names. Fails (and prints why) on a bad tag or pattern.
+// Release it with update_query_destroy.
+update_query_make :: proc(env: ^Env, options: Options, names: []string) -> (query: Update_Query, ok: bool) {
+	query = Update_Query {
+		target     = options.update.target,
+		global     = options.update.global,
+		need_times = options.update.target == .Newest || .Time in options.update.format,
+	}
+	defer if !ok {
+		update_query_destroy(query)
+	}
+
+	plain_names := make([dynamic]string, context.temp_allocator)
+	for word in names {
+		name, tag := word, ""
+		if at := strings.index_byte(word, '@'); at >= 0 {
+			name, tag = word[:at], word[at + 1:]
+			if _, valid := parse_tag(tag); !valid {
+				return query, fail(env, "%s is not a vMAJOR.MINOR.PATCH tag", tag)
+			}
+		}
+		append(&plain_names, name)
+		query.name_tags[name] = tag
+	}
+	query.names = plain_names[:]
+
+	// A filter starting with `!` is a reject pattern.
+	filters := make([dynamic]string, context.temp_allocator)
+	rejects := make([dynamic]string, context.temp_allocator)
+	filter_versions := make([dynamic]string, context.temp_allocator)
+	reject_versions := make([dynamic]string, context.temp_allocator)
+	append(&rejects, ..options.update.reject[:])
+	append(&reject_versions, ..options.update.reject_version[:])
+	for text in update_pattern_texts(options.update.filter[:]) {
+		if strings.has_prefix(text, "!") {
+			append(&rejects, text[1:])
+		} else {
+			append(&filters, text)
+		}
+	}
+
+	for text in update_pattern_texts(options.update.filter_version[:]) {
+		if strings.has_prefix(text, "!") {
+			append(&reject_versions, text[1:])
+		} else {
+			append(&filter_versions, text)
+		}
+	}
+
+	filter := update_patterns(env, filters[:]) or_return
+	query.filter = filter[:]
+	reject := update_patterns(env, rejects[:]) or_return
+	query.reject = reject[:]
+	filter_version := update_patterns(env, filter_versions[:]) or_return
+	query.filter_version = filter_version[:]
+	reject_version := update_patterns(env, reject_versions[:]) or_return
+	query.reject_version = reject_version[:]
+	return query, true
+}
+
+// Frees the compiled patterns of a query made by update_query_make.
+update_query_destroy :: proc(query: Update_Query) {
+	update_patterns_destroy(query.filter)
+	update_patterns_destroy(query.reject)
+	update_patterns_destroy(query.filter_version)
+	update_patterns_destroy(query.reject_version)
+}
+
 // Positional names and name patterns, applied before any repository lookup.
 update_name_selected :: proc(query: Update_Query, name: string) -> bool {
 	if len(query.names) > 0 && !slice.contains(query.names, name) {
