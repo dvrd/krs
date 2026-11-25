@@ -3,6 +3,7 @@ package krs
 import "core:encoding/json"
 import "core:fmt"
 import "core:slice"
+import "core:strconv"
 import "core:strings"
 import "core:text/regex"
 import "core:time"
@@ -59,6 +60,17 @@ Update_Options :: struct {
 	install:        Install_Mode, // `update -u --install`: when to install
 	install_given:  bool, // --install was passed (a zero value is not enough)
 	pin:            bool, // `update -u --pin`: pin every chosen version
+	interactive:        bool, // `update -i`: choose upgrades before applying them
+	interactive_select: Interactive_Select, // which upgrades start selected
+}
+
+// Which upgrades `update -i` selects before the person changes anything.
+Interactive_Select :: enum {
+	Auto, // patch and minor upgrades
+	None,
+	Patch,
+	Minor, // patch and minor upgrades
+	All,
 }
 
 // When `krs update -u` installs what it chose.
@@ -99,7 +111,7 @@ LOG_LEVEL_NAMES :: [Log_Level]string {
 update_flag_takes_value :: proc(flag: string) -> bool {
 	switch flag {
 	case "-t", "--target", "-f", "--filter", "-x", "--reject", "--filter-version", "--reject-version",
-	     "--format", "-e", "--error-level", "-l", "--loglevel", "--install":
+	     "--format", "-e", "--error-level", "-l", "--loglevel", "--install", "--interactive-select":
 		return true
 	}
 	return false
@@ -113,7 +125,7 @@ update_flag_only :: proc(flag: string) -> bool {
 
 	switch flag {
 	case "-u", "--upgrade", "-j", "--json-all", "--json-upgraded", "--json-deps", "-g", "--global",
-	     "-s", "--silent", "--pin":
+	     "-s", "--silent", "--pin", "-i", "--interactive":
 		return true
 	}
 	return false
@@ -852,7 +864,130 @@ command_update_upgrade :: proc(env: ^Env, options: Options, names: []string) -> 
 		}
 	}
 
+	if options.update.interactive {
+		if !env.interactive {
+			return fail(env, "choosing upgrades needs a terminal; run without -i or in a terminal")
+		}
+
+		chosen := update_choose_interactive(env, candidates[:], options.update.interactive_select) or_return
+		if len(chosen) == 0 {
+			success(env, "no upgrades were chosen; nothing was changed")
+			return true
+		}
+
+		candidates = chosen
+
+		// The person already confirmed by pressing Enter on the list; do not
+		// ask Proceed? again.
+		state.options.yes = true
+	}
+
 	return update_apply(state, candidates[:], options)
+}
+
+// Whether an upgrade starts selected for `update -i`.
+interactive_preselected :: proc(which: Interactive_Select, group: Update_Group) -> bool {
+	switch which {
+	case .None:
+		return false
+	case .All:
+		return true
+	case .Patch:
+		return group == .Patch
+	case .Auto, .Minor:
+		return group == .Patch || group == .Minor
+	}
+	return false
+}
+
+// Whether `text` is one or more ASCII digits.
+interactive_digits :: proc(text: string) -> bool {
+	if len(text) == 0 {
+		return false
+	}
+
+	for character in transmute([]byte)text {
+		if character < '0' || character > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// Lets a person toggle upgrades on standard input. Returns the chosen ones;
+// `ok` is false when the person declined everything or input ended early.
+update_choose_interactive :: proc(env: ^Env, candidates: []Update_Candidate, which: Interactive_Select) -> (chosen: [dynamic]Update_Candidate, ok: bool) {
+	offered := make([dynamic]Update_Candidate, context.temp_allocator)
+	for candidate in candidates {
+		if !candidate.pinned {
+			append(&offered, candidate)
+		}
+	}
+
+	if len(offered) == 0 {
+		return chosen, true
+	}
+
+	selected := make([]bool, len(offered), context.temp_allocator)
+	for candidate, index in offered {
+		selected[index] = interactive_preselected(which, candidate.group)
+	}
+
+	for _ in 0 ..< len(offered) * 4 + 16 {
+		for candidate, index in offered {
+			mark := paint(env, ANSI_GREEN, "[x]") if selected[index] else paint(env, ANSI_DIM, "[ ]")
+			say(env, "  %v %2d  %s %s %v %s", mark, index + 1, candidate.name, candidate.current, paint(env, ANSI_DIM, "->"), candidate.chosen)
+		}
+
+		prompt(env, "%v ", paint(env, ANSI_DIM, "toggle numbers, a for all, Enter to apply, q to quit:"))
+		answer := strings.to_lower(ask_line(env), context.temp_allocator)
+
+		switch answer {
+		case "":
+			for candidate, index in offered {
+				if selected[index] {
+					append(&chosen, candidate)
+				}
+			}
+			return chosen, true
+		case "q":
+			return chosen, fail(env, "no upgrades were applied")
+		case "a":
+			all := true
+			for value in selected {
+				all &&= value
+			}
+			for &value in selected {
+				value = !all
+			}
+			continue
+		}
+
+		toggles := make([dynamic]int, context.temp_allocator)
+		valid := true
+		parts := strings.split_multi(answer, {" ", ","}, context.temp_allocator)
+		for part in parts {
+			if part == "" {
+				continue
+			}
+
+			number, parsed := strconv.parse_int(part, 10)
+			if !interactive_digits(part) || !parsed || number < 1 || number > len(offered) {
+				warn(env, "%s is not a number from the list", part)
+				valid = false
+				break
+			}
+			append(&toggles, number - 1)
+		}
+
+		if valid {
+			for index in toggles {
+				selected[index] = !selected[index]
+			}
+		}
+	}
+
+	return chosen, fail(env, "too many answers; nothing was changed")
 }
 
 // Moves every unpinned candidate to its chosen release in one plan. Pinned

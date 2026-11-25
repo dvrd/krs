@@ -16,6 +16,8 @@ USAGE_FORMAT :: `%[0]susage:%[1]s
       list newer releases; filter with names, -f, -x
   krs %[0]supdate -u%[1]s [<package>[@<tag>]...] [options]
       write the chosen versions to .krs/packages.json and install them
+  krs %[0]supdate -i%[1]s [<package>...] [--interactive-select=<which>] [--root=<path>]
+      choose which upgrades to take, then apply them
   krs %[0]sfetch%[1]s
       refresh the GitHub releases of the configured libraries
   krs %[0]sfetch%[1]s <owner>/<repo>
@@ -52,6 +54,8 @@ USAGE_FORMAT :: `%[0]susage:%[1]s
   %[0]s-u, --upgrade%[1]s           write .krs/packages.json and install
   %[0]s--install%[1]s <m>           always, never (lockfile only) or prompt
   %[0]s--pin%[1]s                   with -u: pin every chosen version
+  %[0]s-i, --interactive%[1]s       choose upgrades before applying them
+  %[0]s--interactive-select%[1]s    auto, none, patch, minor or all: what starts selected
   %[0]s-t, --target%[1]s <t>        latest, greatest, newest, minor, patch or semver
   %[0]s-f, --filter%[1]s <p>        only names matching p (name, a,b, glob*, /regex/, !name)
   %[0]s-x, --reject%[1]s <p>        skip names matching p
@@ -107,6 +111,7 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 	words: [dynamic]string
 	update_flag := "" // the first update-only flag given, for the guard below
 	log_level: Maybe(Log_Level)
+	interactive_select_given := false
 
 	for index := 0; index < len(arguments); index += 1 {
 		argument := arguments[index]
@@ -215,6 +220,26 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 			options.update.install_given = true
 		case flag == "--pin":
 			options.update.pin = true
+		case flag == "-i" || flag == "--interactive":
+			options.update.interactive = true
+			options.update.upgrade = true
+		case flag == "--interactive-select":
+			switch value {
+			case "auto":
+				options.update.interactive_select = .Auto
+			case "none":
+				options.update.interactive_select = .None
+			case "patch":
+				options.update.interactive_select = .Patch
+			case "minor":
+				options.update.interactive_select = .Minor
+			case "all":
+				options.update.interactive_select = .All
+			case:
+				fail(env, "%s is not a valid --interactive-select value; use auto, none, patch, minor or all", value)
+				return EXIT_USAGE
+			}
+			interactive_select_given = true
 		case flag == "--color":
 			env.style.stdout = true
 			env.style.color = true
@@ -268,6 +293,20 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 	if options.update.upgrade && options.update.global {
 		fail(env, "-u and --global cannot be combined")
 		return EXIT_USAGE
+	}
+
+	if interactive_select_given && !options.update.interactive {
+		fail(env, "--interactive-select needs -i")
+		return EXIT_USAGE
+	}
+
+	if options.update.interactive {
+		for word in words[1:] {
+			if strings.contains_rune(word, '@') {
+				fail(env, "-i cannot be combined with name@tag")
+				return EXIT_USAGE
+			}
+		}
 	}
 
 	if options.update.pin && !options.update.upgrade {

@@ -1402,3 +1402,125 @@ status_reports_vendor_mode :: proc(t: ^testing.T) {
 	expect_contains(&fixture, result.out, "vendor mode")
 	expect_contains(&fixture, result.out, "installed v1.0.0")
 }
+
+// Three libraries' worth of upgrades: beta v0.4.0 -> v0.5.0 (major zero) and
+// gamma v0.1.0 -> v0.1.1 (patch), listed in name order.
+interactive_fixture :: proc(fixture: ^Fixture) {
+	library_release(fixture, "beta", "v0.4.0")
+	library_release(fixture, "gamma", "v0.1.0")
+	project_imports(fixture, "beta", "gamma")
+	expect_ok(fixture, run(fixture, "", "install", "--yes"))
+	library_release(fixture, "beta", "v0.4.1")
+	library_release(fixture, "beta", "v0.5.0")
+	library_release(fixture, "gamma", "v0.1.1")
+}
+
+@(test)
+update_interactive_takes_the_preselected_upgrades :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	interactive_fixture(&fixture)
+
+	expect_ok(&fixture, run(&fixture, "\n", "update", "-i"))
+	expect_release(&fixture, "gamma", "v0.1.1")
+	expect_release(&fixture, "beta", "v0.4.0")
+}
+
+@(test)
+update_interactive_needs_a_terminal :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	interactive_fixture(&fixture)
+
+	expect_failure(&fixture, run(&fixture, "", "update", "-i"), "choosing upgrades needs a terminal")
+}
+
+@(test)
+update_interactive_flags_are_checked :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	interactive_fixture(&fixture)
+
+	misuse := run(&fixture, "", "install", "-i")
+	testing.expect_value(t, misuse.code, krs.EXIT_USAGE)
+	expect_contains(&fixture, misuse.err, "-i only applies to update")
+
+	without := run(&fixture, "", "update", "--interactive-select=all")
+	testing.expect_value(t, without.code, krs.EXIT_USAGE)
+	expect_contains(&fixture, without.err, "needs -i")
+
+	bogus := run(&fixture, "", "update", "-i", "--interactive-select=bogus")
+	testing.expect_value(t, bogus.code, krs.EXIT_USAGE)
+	expect_contains(&fixture, bogus.err, "not a valid")
+
+	tagged := run(&fixture, "", "update", "-i", "beta@v0.5.0")
+	testing.expect_value(t, tagged.code, krs.EXIT_USAGE)
+	expect_contains(&fixture, tagged.err, "cannot be combined with name@tag")
+}
+
+@(test)
+update_interactive_toggles_by_number :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	interactive_fixture(&fixture)
+
+	expect_ok(&fixture, run(&fixture, "1\n\n", "update", "-i"))
+	expect_release(&fixture, "beta", "v0.5.0")
+	expect_release(&fixture, "gamma", "v0.1.1")
+}
+
+@(test)
+update_interactive_select_all_and_none :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	interactive_fixture(&fixture)
+
+	none := run(&fixture, "\n", "update", "-i", "--interactive-select=none")
+	expect_ok(&fixture, none)
+	expect_contains(&fixture, none.out, "no upgrades were chosen")
+	expect_release(&fixture, "beta", "v0.4.0")
+	expect_release(&fixture, "gamma", "v0.1.0")
+
+	expect_ok(&fixture, run(&fixture, "\n", "update", "-i", "--interactive-select=all"))
+	expect_release(&fixture, "beta", "v0.5.0")
+	expect_release(&fixture, "gamma", "v0.1.1")
+}
+
+@(test)
+update_interactive_quit_changes_nothing :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	interactive_fixture(&fixture)
+	before := packages_text(&fixture)
+
+	expect_failure(&fixture, run(&fixture, "q\n", "update", "-i"), "no upgrades were applied")
+	testing.expect_value(t, packages_text(&fixture), before)
+	expect_release(&fixture, "gamma", "v0.1.0")
+}
+
+@(test)
+update_interactive_skips_pinned :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	interactive_fixture(&fixture)
+	expect_ok(&fixture, run(&fixture, "", "pin", "gamma"))
+
+	result := run(&fixture, "\n", "update", "-i", "--interactive-select=all")
+	expect_ok(&fixture, result)
+	testing.expect(t, !strings.contains(squeeze(result.out), "gamma v0.1.0 -> v0.1.1"))
+	expect_release(&fixture, "gamma", "v0.1.0")
+}
