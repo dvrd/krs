@@ -239,7 +239,7 @@ unmanaged_directory_is_left_alone :: proc(t: ^testing.T) {
 	testing.expect(t, !strings.contains(manifest_text(&fixture), "beta"))
 
 	expect_failure(&fixture, run(&fixture, "", "link", "beta"), "not managed by krs")
-	expect_failure(&fixture, run(&fixture, "", "update", "beta", "--yes"), "was not installed by krs")
+	expect_failure(&fixture, run(&fixture, "", "update", "beta", "-u", "--yes"), "was not installed by krs")
 }
 
 @(test)
@@ -403,7 +403,7 @@ moved_tag_is_refused ::proc(t: ^testing.T) {
 	git(t, repository, "commit", "--quiet", "--allow-empty", "-m", "rewritten")
 	git(t, repository, "tag", "--force", "v0.1.0")
 
-	expect_failure(&fixture, run(&fixture, "", "update", "beta@v0.1.0", "--yes"), "a published tag must not move")
+	expect_failure(&fixture, run(&fixture, "", "update", "beta@v0.1.0", "-u", "--yes"), "a published tag must not move")
 
 	other := krs.path_join(fixture.base, "other-root")
 	os.make_directory_all(other)

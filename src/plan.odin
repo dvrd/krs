@@ -10,7 +10,7 @@ Options :: struct {
 	restore: bool, // `unlink` installs the recorded release in place of the link
 	repair:  bool, // `install` reinstalls packages whose files no longer match
 	fetch:   bool, // `update` refreshes GitHub caches before checking
-	all:     bool, // `update` moves every package to its highest compatible tag
+	update:  Update_Options, // the flags only `update` takes
 }
 
 // How often a command touched Git or the disk; tests assert the caches work.

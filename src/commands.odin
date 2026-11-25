@@ -85,9 +85,40 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 	}
 
 	options: Options
+	// Options is zero-initialised; these are the defaults of `krs update`.
+	options.update.format = {.Group}
+	options.update.error_level = 1
 	words: [dynamic]string
+	update_flag := "" // the first update-only flag given, for the guard below
+	log_level: Maybe(Log_Level)
 
-	for argument in arguments {
+	for index := 0; index < len(arguments); index += 1 {
+		argument := arguments[index]
+		flag, value, inline := argument, "", false
+		if strings.has_prefix(argument, "--") {
+			if equals := strings.index_byte(argument, '='); equals >= 0 {
+				flag, value, inline = argument[:equals], argument[equals + 1:], true
+			}
+		}
+
+		if update_flag_takes_value(flag) {
+			if !inline {
+				if index + 1 >= len(arguments) {
+					fail(env, "%s needs a value", flag)
+					return EXIT_USAGE
+				}
+				index += 1
+				value = arguments[index]
+			}
+		} else if inline && flag != "--root" {
+			fail(env, "unknown option %s", argument)
+			return EXIT_USAGE
+		}
+
+		if update_flag == "" && update_flag_only(flag) {
+			update_flag = flag
+		}
+
 		switch {
 		case argument == "--frozen":
 			options.frozen = true
@@ -100,9 +131,71 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 		case argument == "--fetch":
 			options.fetch = true
 		case argument == "--all":
-			options.all = true
-		case strings.has_prefix(argument, "--root="):
-			options.root = argument[len("--root="):]
+			fail(env, "--all was removed; use krs update -u -t semver")
+			return EXIT_USAGE
+		case flag == "--root":
+			options.root = value
+		case flag == "-u" || flag == "--upgrade":
+			options.update.upgrade = true
+		case flag == "-t" || flag == "--target":
+			target, valid := update_target_parse(value)
+			if !valid {
+				fail(env, "%s is not a target; use latest, newest, greatest, minor, patch or semver", value)
+				return EXIT_USAGE
+			}
+			options.update.target = target
+		case flag == "-f" || flag == "--filter":
+			append(&options.update.filter, value)
+		case flag == "-x" || flag == "--reject":
+			append(&options.update.reject, value)
+		case flag == "--filter-version":
+			append(&options.update.filter_version, value)
+		case flag == "--reject-version":
+			append(&options.update.reject_version, value)
+		case flag == "--format":
+			for item in strings.split(value, ",", context.temp_allocator) {
+				format, enabled, valid := update_format_parse(item)
+				if !valid {
+					fail(env, "%s is not a format; use group, lines, time, repo, diff or installed-version", item)
+					return EXIT_USAGE
+				}
+
+				if enabled {
+					options.update.format += {format}
+				} else {
+					options.update.format -= {format}
+				}
+			}
+		case flag == "-j" || flag == "--json-all":
+			options.update.json = .All
+		case flag == "--json-upgraded":
+			options.update.json = .Upgraded
+		case flag == "--json-deps":
+			options.update.json = .Deps
+		case flag == "-e" || flag == "--error-level":
+			switch value {
+			case "1":
+				options.update.error_level = 1
+			case "2":
+				options.update.error_level = 2
+			case:
+				fail(env, "%s is not an error level; use 1 or 2", value)
+				return EXIT_USAGE
+			}
+		case flag == "-g" || flag == "--global":
+			options.update.global = true
+		case flag == "--color":
+			env.style.stdout = true
+			env.style.color = true
+		case flag == "-s" || flag == "--silent":
+			log_level = .Silent
+		case flag == "-l" || flag == "--loglevel":
+			level, valid := log_level_parse(value)
+			if !valid {
+				fail(env, "%s is not a log level; use silent, error, minimal, warn, info or verbose", value)
+				return EXIT_USAGE
+			}
+			log_level = level
 		case strings.has_prefix(argument, "-"):
 			fail(env, "unknown option %s", argument)
 			return EXIT_USAGE
@@ -110,6 +203,7 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 			append(&words, argument)
 		}
 	}
+	_ = log_level
 
 	if options.restore && (len(words) == 0 || words[0] != "unlink") {
 		fail(env, "--restore only applies to unlink")
@@ -126,8 +220,8 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 		return EXIT_USAGE
 	}
 
-	if options.all && (len(words) != 1 || words[0] != "update") {
-		fail(env, "--all only applies to update without a package")
+	if update_flag != "" && (len(words) == 0 || words[0] != "update") {
+		fail(env, "%s only applies to update", update_flag)
 		return EXIT_USAGE
 	}
 
@@ -179,12 +273,13 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 		ok = command_install(env, options)
 	case words[0] == "status" && len(words) == 1:
 		ok = command_status(env, options)
-	case words[0] == "update" && len(words) == 1 && options.all:
-		ok = command_update_all(env, options)
-	case words[0] == "update" && len(words) == 1:
-		ok = command_outdated(env, options)
-	case words[0] == "update" && len(words) == 2:
+	case words[0] == "update" && options.update.upgrade && len(words) == 2:
 		ok = command_update(env, options, words[1])
+	case words[0] == "update" && options.update.upgrade:
+		fail(env, "-u needs exactly one package name for now")
+		return EXIT_USAGE
+	case words[0] == "update":
+		ok = command_check(env, options, words[1:])
 	case words[0] == "fetch" && len(words) == 1:
 		ok = command_fetch_all(env)
 	case words[0] == "fetch" && len(words) == 2:
@@ -273,8 +368,12 @@ command_pin :: proc(env: ^Env, options: Options, name: string, pinned: bool) -> 
 	return true
 }
 
-// `krs update` with no argument: lists newer tags and changes nothing.
-command_outdated :: proc(env: ^Env, options: Options) -> bool {
+// `krs update` without -u: lists newer tags and changes nothing.
+command_check :: proc(env: ^Env, options: Options, names: []string) -> bool {
+	if options.frozen {
+		return fail(env, "--frozen does not apply to update")
+	}
+
 	state := state_open(env, options) or_return
 	defer state_close(state)
 	found := 0
@@ -323,99 +422,6 @@ command_outdated :: proc(env: ^Env, options: Options) -> bool {
 	}
 
 	return true
-}
-
-// `krs update --all`: moves every package of this project to its highest
-// compatible tag in one plan. Breaking tags are listed, never taken. Changes
-// nothing when any package cannot be checked.
-command_update_all :: proc(env: ^Env, options: Options) -> bool {
-	if options.frozen {
-		return fail(env, "--frozen does not apply to update")
-	}
-
-	state := state_open(env, options) or_return
-	defer state_close(state)
-	unavailable := 0
-	queued := 0
-
-	for record in state.manifest.packages {
-		pin := packages_find(&state.packages, record.name)
-		if record.linked != "" || pin == nil {
-			continue
-		}
-
-		if pin.pinned {
-			note(env, "%s is pinned at %s; skipped", record.name, pin.tag)
-			continue
-		}
-
-		if options.fetch {
-			refresh_package_cache(state, record.name, record.source)
-		}
-
-		repository, found := repository_find(state, record.name, "", record.source)
-		if !found {
-			warn(env, "cannot check %s: no usable repository", record.name)
-			unavailable += 1
-			continue
-		}
-
-		current, current_ok := parse_tag(pin.tag)
-		if !current_ok {
-			warn(env, "cannot check %s: invalid installed tag %s", record.name, pin.tag)
-			unavailable += 1
-			continue
-		}
-
-		chosen := ""
-		chosen_version: Version
-		for tag in repository.tags {
-			version, valid := parse_tag(tag)
-			if !valid || version_compatibility(current, version) != .Compatible {
-				continue
-			}
-
-			if chosen == "" || version_compare(version, chosen_version) == .Higher {
-				chosen = tag
-				chosen_version = version
-			}
-		}
-
-		highest, _ := highest_tag(repository.tags[:])
-		highest_version, highest_ok := parse_tag(highest)
-		if highest_ok && version_compare(highest_version, current) == .Higher &&
-		   version_compatibility(current, highest_version) != .Compatible {
-			note(env, "%s %s is available; run %s to take it", record.name, highest, fmt.tprintf("krs update %s", record.name))
-		}
-
-		if chosen == "" {
-			continue
-		}
-
-		higher := version_compare(chosen_version, current) == .Higher
-		stale := chosen == record.tag && pin.tag != record.tag
-		if !higher && !stale {
-			continue
-		}
-
-		say_version_change(env, record.name, pin.tag, chosen, .Compatible)
-		append(&state.queue, Request{name = record.name, tag = chosen, source = record.source, by = "krs update --all", kind = .Update, recorded = true, source_trusted = true})
-		queued += 1
-	}
-
-	if unavailable > 0 {
-		return fail(env, "could not check %d package(s); nothing was changed", unavailable)
-	}
-
-	if queued == 0 {
-		success(env, "every package of this project is at its highest compatible tag")
-		return true
-	}
-
-	plan_discover(state) or_return
-	plan_drain(state) or_return
-
-	return plan_apply(state)
 }
 
 // Lists the installed packages whose own records name another version.

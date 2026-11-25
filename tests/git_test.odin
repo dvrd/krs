@@ -101,7 +101,7 @@ fetch_uses_a_github_locator_and_preserves_existing_cached_tags :: proc(t: ^testi
 	expect_ok(&fixture, run(&fixture, "", "fetch", "dvrd/beta"))
 	testing.expect_value(t, git(t, cache, "rev-parse", "refs/tags/v1.0.0"), first)
 	testing.expect_value(t, git(t, cache, "rev-parse", "refs/tags/v1.1.0"), second)
-	expect_ok(&fixture, run(&fixture, "", "update", "beta", "--yes"))
+	expect_ok(&fixture, run(&fixture, "", "update", "beta", "-u", "--yes"))
 	expect_release(&fixture, "beta", "v1.1.0")
 }
 
