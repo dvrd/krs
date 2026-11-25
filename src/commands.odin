@@ -14,8 +14,8 @@ USAGE_FORMAT :: `%[0]susage:%[1]s
       list what the Odin root holds for this project
   krs %[0]supdate%[1]s [<package>[@<tag>]...] [options]
       list newer releases; filter with names, -f, -x
-  krs %[0]supdate -u%[1]s <package>[@<tag>] [--root=<path>] [--yes]
-      install a newer release of one package
+  krs %[0]supdate -u%[1]s [<package>[@<tag>]...] [options]
+      write the chosen versions to .krs/packages.json and install them
   krs %[0]sfetch%[1]s
       refresh the GitHub releases of the configured libraries
   krs %[0]sfetch%[1]s <owner>/<repo>
@@ -49,6 +49,9 @@ USAGE_FORMAT :: `%[0]susage:%[1]s
   %[0]s--yes%[1]s          do not ask before writing
 
   update options:
+  %[0]s-u, --upgrade%[1]s           write .krs/packages.json and install
+  %[0]s--install%[1]s <m>           always, never (lockfile only) or prompt
+  %[0]s--pin%[1]s                   with -u: pin every chosen version
   %[0]s-t, --target%[1]s <t>        latest, greatest, newest, minor, patch or semver
   %[0]s-f, --filter%[1]s <p>        only names matching p (name, a,b, glob*, /regex/, !name)
   %[0]s-x, --reject%[1]s <p>        skip names matching p
