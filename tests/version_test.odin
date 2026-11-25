@@ -1846,6 +1846,13 @@ doctor_refuses_a_lockfile_behind_the_root :: proc(t: ^testing.T) {
 }
 
 @(test)
+doctor_recovery_quotes_paths :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	testing.expect_value(t, krs.shell_quote("/a b/it's"), "'/a b/it'\\''s'")
+	testing.expect_value(t, krs.shell_quote("/plain"), "'/plain'")
+}
+
+@(test)
 doctor_reports_a_failed_restore :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	fixture := fixture_make(t)
@@ -1866,7 +1873,10 @@ doctor_reports_a_failed_restore :: proc(t: ^testing.T) {
 	result := run(&fixture, "", "update", "-u", "--doctor", "--yes", test)
 	testing.expectf(t, result.code == 1, "exit %d\nout: %s\nerr: %s", result.code, result.out, result.err)
 	expect_contains(&fixture, result.err, "could not restore the previous versions")
-	expect_contains(&fixture, result.err, "krs update -u --yes beta@v0.4.0 gamma@v0.1.0")
+	// krs prints the project as given and the Odin root resolved by state_lock
+	// (on macOS /var becomes /private/var), so resolve only the root here.
+	root, _ := os.get_absolute_path(fixture.root, context.temp_allocator)
+	expect_contains(&fixture, result.err, fmt.tprintf("cd '%s' && krs update -u --yes --root='%s' beta@v0.4.0 gamma@v0.1.0", fixture.project, root))
 
 	// The printed command, end to end.
 	testing.expect(t, os.rename(gone, beta) == nil)
