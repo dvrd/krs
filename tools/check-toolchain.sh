@@ -3,7 +3,8 @@ set -eu
 
 repo=$(cd "$(dirname "$0")/.." && pwd)
 version_file=${KRS_ODIN_VERSION_FILE:-$repo/ODIN_VERSION}
-libgit2_floor=1.0
+# libgit2 1.2 introduced git_remote_set_instance_url.
+libgit2_floor=1.2
 
 fail() {
     printf 'krs: %s\n' "$1" >&2
