@@ -52,9 +52,11 @@ Set `KRS_NO_ANIMATION=1` to keep terminal colors with static output. Set
 
 - `krs install` resolves the project's `shared:` imports. With the example config, `import "shared:kessel"` can fetch `dvrd/kessel` automatically when a matching local or cached release is missing. Use `--frozen` to require the versions already recorded in `.krs/packages.json`.
 - `krs status` lists what the Odin root holds for this project and exits 1 when a package is altered, missing, broken or pinned differently.
-- `krs update` lists newer local tags. Use `krs update surf` to install the latest or `krs update surf@v1.2.3` to select a release.
-- `krs fetch dvrd/kessel` selects or refreshes GitHub releases over HTTPS. Then run `krs install` or `krs update kessel`.
-- `krs link surf` uses the checkout's live `src/`. `krs link ls` lists the links and flags broken ones. `krs unlink surf` removes the link from `shared/`. Add `--restore` to install the recorded release in its place.
+- `krs install --repair` reinstalls packages whose installed files were changed, at their recorded release. It cannot be combined with `--frozen`.
+- `krs update` lists newer tags from the source directories and the GitHub cache. Run `krs fetch` first, or pass `--fetch`, to refresh the cache. Use `krs update surf` to install the latest or `krs update surf@v1.2.3` to select a release. Use `krs update --all` to move every package to its highest compatible tag.
+- `krs fetch` with no argument refreshes the GitHub releases of the libraries in `libs`. `krs fetch dvrd/kessel` selects or refreshes one repository over HTTPS. Then run `krs install` or `krs update kessel`. `fetch` takes no `--root`, `--frozen` or `--yes`.
+- `krs link surf` uses the checkout's live `src/`. `krs link ls` lists the links and flags broken ones. `krs unlink surf` removes the link from `shared/`. Add `--restore` to install the recorded release in its place. `ls` is reserved after `link`, so a package named `ls` cannot be linked.
+- `krs recover` lists interrupted file publications. `krs recover abandon <id>` gives up on one.
 
 Choose the Odin root with `--root=<path>` or `ODIN_ROOT`. Otherwise KRS uses
 `odin root`. Every project using that root sees changes to its `shared/`.
@@ -70,6 +72,23 @@ KRS records file publications in
 `~/.local/shared/krs/transactions.db`. On the next command using the
 same project or Odin root, KRS rolls back an interrupted publication or
 finishes cleaning up a settled one before reading the package records.
+
+## What gets installed
+
+KRS installs the `.odin` files under the library's `src/`, or the repository's
+own `.odin` files when there is no `src/`, except those under `tests`,
+`examples` and `testdata`. It adds every file named by `#load`,
+`#load_directory`, `#load_hash` or a relative `foreign import`, in all `when`
+branches, and licence files (names starting with `license`, `licence`,
+`notice` or `copying`, in any case). A file the code opens at run time without
+naming it in one of these ways is not installed. `krs unlink --restore` warns
+about files that no Odin file names.
+
+## Non-interactive use
+
+Commands that write ask first. Pass `--yes` in scripts. Use `--frozen` in CI to
+fail instead of changing versions. Without a terminal and without `--yes`, KRS
+fails with `confirmation is needed`.
 
 ## Release version
 
