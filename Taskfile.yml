@@ -54,12 +54,16 @@ tasks:
       - task: odin
         vars: {ACTION: build, PACKAGE: tools/version, BINARY: krs-version, QUIET: 'true'}
 
+  toolchain:
+    internal: true
+    run: once
+    cmds:
+      - sh tools/check-toolchain.sh
+
   odin:
     internal: true
     silent: true
-    preconditions:
-      - sh: pkg-config --exists libgit2
-        msg: Install libgit2 and make it available to pkg-config
+    deps: [toolchain]
     cmds:
       - |
         set -e
