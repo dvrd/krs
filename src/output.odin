@@ -261,6 +261,19 @@ fail :: proc(env: ^Env, format: string, arguments: ..any) -> bool {
 	return false
 }
 
+// A line a person must see even at quiet log levels (only --silent hides it);
+// unlike fail, it does not mean the command failed.
+urgent :: proc(env: ^Env, format: string, arguments: ..any) {
+	progress_stop(env)
+	if env.level < .Error {
+		return
+	}
+
+	colored := stderr_colored(env)
+	lead(env.err, env.style.stderr, colored, "!", ANSI_YELLOW, "krs:", ANSI_DIM)
+	fmt.wprintfln(env.err, highlight(format, colored), ..clean_arguments(arguments))
+}
+
 progress_start :: proc(env: ^Env, label: string) {
 	progress := env.progress
 	if progress == nil {

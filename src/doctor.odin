@@ -428,7 +428,7 @@ command_update_doctor :: proc(env: ^Env, options: Options, names: []string) -> b
 
 	// Baseline: the tests must pass before anything changes.
 	info(env, "tests: %s", doctor_test_command(yes_options, vendored))
-	note(env, "if this run stops early, restore with: %s", doctor_recovery(snapshot, linked[:], env.project, root))
+	urgent(env, "if this run stops early, restore with: %s", doctor_recovery(snapshot, linked[:], env.project, root))
 	baseline := doctor_check(env, yes_options, root, vendored) or_return
 	if !baseline.passed {
 		fail(env, "the tests fail before upgrading; --doctor needs a passing baseline")
