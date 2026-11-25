@@ -320,3 +320,168 @@ update_all_is_removed :: proc(t: ^testing.T) {
 	expect_contains(&fixture, result.err, "--all was removed; use krs update -u -t semver")
 	expect_release(&fixture, "beta", "v1.0.0")
 }
+
+// The line of `text` that contains `part`, or "".
+line_with :: proc(text, part: string) -> string {
+	for line in strings.split_lines(text) {
+		if strings.contains(line, part) {
+			return line
+		}
+	}
+	return ""
+}
+
+@(test)
+update_formats :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	release_beta_line(&fixture)
+
+	lines := run(&fixture, "", "update", "--format", "lines")
+	expect_ok(&fixture, lines)
+	testing.expect_value(t, lines.out, "beta@v2.0.0\n")
+
+	// `lines` wins over every other format.
+	mixed := run(&fixture, "", "update", "--format=group,time,lines")
+	expect_ok(&fixture, mixed)
+	testing.expect_value(t, mixed.out, "beta@v2.0.0\n")
+
+	timed := line_with(check_update(&fixture, "--format", "time"), "beta v1.0.0 -> v2.0.0")
+	testing.expectf(t, len(timed) > 10, "no dated row: %q", timed)
+	if len(timed) > 10 {
+		date := timed[len(timed) - 10:]
+		for character, index in transmute([]byte)date {
+			if index == 4 || index == 7 {
+				testing.expectf(t, character == '-', "not a date: %q", date)
+			} else {
+				testing.expectf(t, character >= '0' && character <= '9', "not a date: %q", date)
+			}
+		}
+	}
+
+	flat := check_update(&fixture, "--format", "no-group")
+	expect_contains(&fixture, flat, " beta v1.0.0 -> v2.0.0\n")
+	testing.expect(t, !strings.contains(flat, "Major"))
+
+	// A local source has no repository link to show.
+	local := line_with(check_update(&fixture, "--format", "repo,diff"), "beta v1.0.0")
+	testing.expect(t, strings.has_suffix(local, "-> v2.0.0"), local)
+
+	github := fixture_make(t)
+	defer fixture_destroy(&github)
+	github_fixture_release(&github, "dvrd", "project-kessel", "v1.0.0")
+	project_imports(&github, "kessel")
+	write_file(t, krs.path_join(github.home, krs.CONFIG_PATH),
+		`{"libs":{"kessel":{"source":"github","target":"dvrd/project-kessel"}}}`)
+	expect_ok(&github, run(&github, "", "install", "--yes"))
+	github_fixture_release(&github, "dvrd", "project-kessel", "v1.1.0")
+
+	repo := check_update(&github, "--fetch", "--format", "repo")
+	expect_contains(&github, repo, "kessel v1.0.0 -> v1.1.0 https://github.com/dvrd/project-kessel.git\n")
+	diff := check_update(&github, "--format", "diff")
+	expect_contains(&github, diff, "kessel v1.0.0 -> v1.1.0 https://github.com/dvrd/project-kessel/compare/v1.0.0...v1.1.0\n")
+
+	// The root holds another tag than this project records.
+	b := fixture_make(t)
+	defer fixture_destroy(&b)
+	b.root = fixture.root
+	b.shared = fixture.shared
+	b.home = fixture.home
+	b.sources = fixture.sources
+	project_imports(&b, "beta")
+	expect_ok(&b, run(&b, "", "install", "--yes"))
+	expect_ok(&b, run(&b, "", "update", "beta@v1.1.0", "-u", "--yes"))
+	installed := check_update(&fixture, "--format", "installed-version")
+	expect_contains(&fixture, installed, "beta v1.0.0 -> v2.0.0 (installed v1.1.0)\n")
+	testing.expect(t, !strings.contains(check_update(&b, "--format", "installed-version"), "(installed"))
+}
+
+@(test)
+update_colors_when_forced :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	library_release(&fixture, "beta", "v1.0.0")
+	library_release(&fixture, "gamma", "v1.0.0")
+	project_imports(&fixture, "beta", "gamma")
+	expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
+	library_release(&fixture, "beta", "v2.0.0")
+	library_release(&fixture, "gamma", "v1.0.1")
+
+	plain := run(&fixture, "", "update")
+	expect_ok(&fixture, plain)
+	testing.expect(t, !strings.contains(plain.out, "\x1b["))
+
+	colored := run(&fixture, "", "update", "--color")
+	expect_ok(&fixture, colored)
+	expect_contains(&fixture, colored.out, "\x1b[31mv2.0.0\x1b[0m")
+	expect_contains(&fixture, colored.out, "\x1b[32mv1.0.1\x1b[0m")
+}
+
+@(test)
+update_error_level :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	library_release(&fixture, "beta", "v1.0.0")
+	project_imports(&fixture, "beta")
+	expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
+
+	none := run(&fixture, "", "update", "-e", "2")
+	testing.expect_value(t, none.code, krs.EXIT_OK)
+
+	library_release(&fixture, "beta", "v1.0.1")
+	strict := run(&fixture, "", "update", "-e", "2")
+	testing.expect_value(t, strict.code, krs.EXIT_FAILED)
+	testing.expect_value(t, strict.err, "")
+	expect_contains(&fixture, squeeze(strict.out), "beta v1.0.0 -> v1.0.1")
+	testing.expect_value(t, run(&fixture, "", "update", "--error-level=2").code, krs.EXIT_FAILED)
+	testing.expect_value(t, run(&fixture, "", "update", "-e", "1").code, krs.EXIT_OK)
+	testing.expect_value(t, run(&fixture, "", "update").code, krs.EXIT_OK)
+
+	// A pinned package is not an available upgrade.
+	expect_ok(&fixture, run(&fixture, "", "pin", "beta"))
+	testing.expect_value(t, run(&fixture, "", "update", "-e", "2").code, krs.EXIT_OK)
+}
+
+@(test)
+update_log_levels :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	release_beta_line(&fixture)
+
+	silent := run(&fixture, "", "update", "-s")
+	testing.expect_value(t, silent.code, krs.EXIT_OK)
+	testing.expect_value(t, silent.out, "")
+	testing.expect_value(t, run(&fixture, "", "update", "--silent").out, "")
+
+	warn := run(&fixture, "", "update", "-l", "warn")
+	expect_ok(&fixture, warn)
+	expect_contains(&fixture, squeeze(warn.out), "beta v1.0.0 -> v2.0.0")
+	testing.expect(t, !strings.contains(warn.out, "krs update -u"))
+
+	// No repository: a warning on stdout and a failure on stderr.
+	fixture_config(&fixture, {krs.path_join(fixture.base, "other-sources")})
+	normal := run(&fixture, "", "update")
+	expect_failure(&fixture, normal, "could not check 1 package(s)")
+	expect_contains(&fixture, normal.out, "warning:")
+
+	minimal := run(&fixture, "", "update", "--loglevel=minimal")
+	expect_failure(&fixture, minimal, "could not check 1 package(s)")
+	testing.expect(t, !strings.contains(minimal.out, "warning:"), minimal.out)
+
+	errors := run(&fixture, "", "update", "-l", "error")
+	expect_failure(&fixture, errors, "could not check 1 package(s)")
+	testing.expect_value(t, errors.out, "")
+
+	quiet := run(&fixture, "", "update", "-s")
+	testing.expect_value(t, quiet.code, krs.EXIT_FAILED)
+	testing.expect_value(t, quiet.out, "")
+	testing.expect_value(t, quiet.err, "")
+}

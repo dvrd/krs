@@ -1,8 +1,10 @@
 package krs
 
+import "core:fmt"
 import "core:slice"
 import "core:strings"
 import "core:text/regex"
+import "core:time"
 
 // The tag `krs update` picks for each package. `Latest` and `Greatest` are
 // both the highest tag: KRS has no registry dist-tags, only vMAJOR.MINOR.PATCH.
@@ -503,8 +505,19 @@ UPDATE_GROUP_COLORS :: [Update_Group]string {
 // Headers are printed in this order, then the pinned packages.
 UPDATE_GROUP_ORDER :: [?]Update_Group{.Patch, .Minor, .Major_Zero, .Major}
 
-// Prints the candidates of `krs update`, grouped by the kind of change.
+// Prints the candidates of `krs update`, grouped by the kind of change
+// unless `--format no-group` is given.
 update_print :: proc(env: ^Env, candidates: []Update_Candidate, options: Update_Options) {
+	if .Lines in options.format {
+		// Only `name@tag` lines, for piping; nothing else reaches stdout.
+		for candidate in candidates {
+			if !candidate.pinned {
+				fmt.wprintfln(env.out, "%s@%s", printable(candidate.name), printable(candidate.chosen))
+			}
+		}
+		return
+	}
+
 	headers, colors, targets := UPDATE_GROUP_HEADERS, UPDATE_GROUP_COLORS, UPDATE_TARGET_NAMES
 	name_width, current_width := 0, 0
 	upgrades := 0
@@ -516,32 +529,39 @@ update_print :: proc(env: ^Env, candidates: []Update_Candidate, options: Update_
 		}
 	}
 
-	for group in UPDATE_GROUP_ORDER {
+	if .Group in options.format {
+		for group in UPDATE_GROUP_ORDER {
+			header := false
+			for candidate in candidates {
+				if candidate.pinned || candidate.group != group {
+					continue
+				}
+
+				if !header {
+					say(env, "%v", paint(env, colors[group], headers[group]))
+					header = true
+				}
+				update_print_row(env, candidate, options.format, name_width, current_width)
+			}
+		}
+
 		header := false
 		for candidate in candidates {
-			if candidate.pinned || candidate.group != group {
+			if !candidate.pinned {
 				continue
 			}
 
 			if !header {
-				say(env, "%v", paint(env, colors[group], headers[group]))
+				say(env, "%v", paint(env, ANSI_DIM, "Pinned"))
 				header = true
 			}
-			update_print_row(env, candidate, name_width, current_width)
+			update_print_row(env, candidate, options.format, name_width, current_width)
 		}
-	}
-
-	header := false
-	for candidate in candidates {
-		if !candidate.pinned {
-			continue
+	} else {
+		// Candidates are sorted by name.
+		for candidate in candidates {
+			update_print_row(env, candidate, options.format, name_width, current_width)
 		}
-
-		if !header {
-			say(env, "%v", paint(env, ANSI_DIM, "Pinned"))
-			header = true
-		}
-		update_print_row(env, candidate, name_width, current_width)
 	}
 
 	if upgrades > 0 {
@@ -557,18 +577,40 @@ update_print :: proc(env: ^Env, candidates: []Update_Candidate, options: Update_
 	}
 }
 
-// `  name current -> chosen`, padded to the widest name and tag.
-update_print_row :: proc(env: ^Env, candidate: Update_Candidate, name_width, current_width: int) {
+// `  name current -> chosen`, padded to the widest name and tag, then what
+// `--format` asks for.
+update_print_row :: proc(env: ^Env, candidate: Update_Candidate, format: bit_set[Update_Format], name_width, current_width: int) {
+	extra := strings.builder_make(context.temp_allocator)
+	if .Time in format && candidate.chosen_time != 0 {
+		year, month, day := time.date(time.unix(candidate.chosen_time, 0))
+		fmt.sbprintf(&extra, " %04d-%02d-%02d", year, int(month), day)
+	}
+
+	if .Repo in format && candidate.source != "" && candidate.source != SOURCE_LOCAL {
+		fmt.sbprintf(&extra, " %s", printable(candidate.source))
+	}
+
+	if .Diff in format {
+		if github, valid := github_repository_from_origin(candidate.source); valid {
+			fmt.sbprintf(&extra, " https://github.com/%s/%s/compare/%s...%s", printable(github.owner), printable(github.name),
+				printable(candidate.current), printable(candidate.chosen))
+		}
+	}
+
+	if .Installed_Version in format && candidate.installed != "" && candidate.installed != candidate.current {
+		fmt.sbprintf(&extra, " (installed %s)", printable(candidate.installed))
+	}
+
 	name_padding := strings.repeat(" ", name_width - len(candidate.name), context.temp_allocator)
 	current_padding := strings.repeat(" ", current_width - len(candidate.current), context.temp_allocator)
 	if candidate.pinned {
 		available := paint(env, ANSI_DIM, strings.concatenate({"(pinned; ", candidate.chosen, " available)"}, context.temp_allocator))
-		say(env, "  %s%v %v%v %v", candidate.name, name_padding, candidate.current, current_padding, available)
+		say(env, "  %s%v %v%v %v%v", candidate.name, name_padding, candidate.current, current_padding, available,
+			Painted(strings.to_string(extra)))
 		return
 	}
 
 	colors := UPDATE_GROUP_COLORS
-	color := colors[candidate.group]
-	say(env, "  %s%v %v%v %v %v", candidate.name, name_padding, candidate.current, current_padding,
-		paint(env, ANSI_DIM, "->"), paint(env, color, candidate.chosen))
+	say(env, "  %s%v %v%v %v %v%v", candidate.name, name_padding, candidate.current, current_padding,
+		paint(env, ANSI_DIM, "->"), paint(env, colors[candidate.group], candidate.chosen), Painted(strings.to_string(extra)))
 }

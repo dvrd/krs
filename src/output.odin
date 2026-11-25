@@ -171,6 +171,10 @@ styled :: proc(env: ^Env, format: string, arguments: ..any) -> Painted {
 
 say :: proc(env: ^Env, format: string, arguments: ..any) {
 	progress_stop(env)
+	if env.level < .Minimal {
+		return
+	}
+
 	fmt.wprintfln(env.out, highlight(format, stdout_colored(env)), ..clean_arguments(arguments))
 }
 
@@ -201,6 +205,10 @@ lead :: proc(output: io.Writer, terminal, colored: bool, icon, icon_color, label
 
 success :: proc(env: ^Env, format: string, arguments: ..any) {
 	progress_stop(env)
+	if env.level < .Minimal {
+		return
+	}
+
 	colored := stdout_colored(env)
 	lead(env.out, env.style.stdout, colored, "✓", ANSI_GREEN, "krs:", ANSI_DIM)
 	fmt.wprintfln(env.out, highlight(format, colored), ..clean_arguments(arguments))
@@ -209,6 +217,10 @@ success :: proc(env: ^Env, format: string, arguments: ..any) {
 // Reports progress that is neither a result nor a problem.
 info :: proc(env: ^Env, format: string, arguments: ..any) {
 	progress_stop(env)
+	if env.level < .Info {
+		return
+	}
+
 	colored := stdout_colored(env)
 	lead(env.out, env.style.stdout, colored, "•", ANSI_CYAN, "krs:", ANSI_DIM)
 	fmt.wprintfln(env.out, highlight(format, colored), ..clean_arguments(arguments))
@@ -216,6 +228,10 @@ info :: proc(env: ^Env, format: string, arguments: ..any) {
 
 warn :: proc(env: ^Env, format: string, arguments: ..any) {
 	progress_stop(env)
+	if env.level < .Warn {
+		return
+	}
+
 	colored := stdout_colored(env)
 	lead(env.out, env.style.stdout, colored, "\uf071", ANSI_YELLOW, "warning:", ANSI_YELLOW)
 	fmt.wprintfln(env.out, highlight(format, colored), ..clean_arguments(arguments))
@@ -223,6 +239,10 @@ warn :: proc(env: ^Env, format: string, arguments: ..any) {
 
 note :: proc(env: ^Env, format: string, arguments: ..any) {
 	progress_stop(env)
+	if env.level < .Info {
+		return
+	}
+
 	colored := stdout_colored(env)
 	lead(env.out, env.style.stdout, colored, "•", ANSI_CYAN, "note:", ANSI_CYAN)
 	fmt.wprintfln(env.out, highlight(format, colored), ..clean_arguments(arguments))
@@ -231,6 +251,10 @@ note :: proc(env: ^Env, format: string, arguments: ..any) {
 // Reports a failure and returns false, so a caller can `return fail(...)`.
 fail :: proc(env: ^Env, format: string, arguments: ..any) -> bool {
 	progress_stop(env)
+	if env.level < .Error {
+		return false
+	}
+
 	colored := stderr_colored(env)
 	lead(env.err, env.style.stderr, colored, "✕", ANSI_RED, "krs:", ANSI_DIM)
 	fmt.wprintfln(env.err, highlight(format, colored), ..clean_arguments(arguments))

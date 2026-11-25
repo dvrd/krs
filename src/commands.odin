@@ -203,7 +203,9 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 			append(&words, argument)
 		}
 	}
-	_ = log_level
+	if level, given := log_level.?; given {
+		env.level = level
+	}
 
 	if options.restore && (len(words) == 0 || words[0] != "unlink") {
 		fail(env, "--restore only applies to unlink")
@@ -434,6 +436,15 @@ command_check :: proc(env: ^Env, options: Options, names: []string) -> bool {
 	defer state_close(state)
 	candidates := update_candidates(state, query) or_return
 	update_print(env, candidates[:], options.update)
+
+	// `-e 2` lets CI fail when an upgrade is available; it is not an error.
+	if options.update.error_level == 2 {
+		for candidate in candidates {
+			if !candidate.pinned {
+				return false
+			}
+		}
+	}
 	return true
 }
 

@@ -71,6 +71,7 @@ Env :: struct {
 	input:        io.Reader,
 	interactive:  bool, // a person can be asked
 	style:        Output_Style,
+	level:        Log_Level, // zero value .Info prints everything
 	progress:     ^Progress,
 	download_tags: proc(env: ^Env, repo: ^Git_Repository, directory, origin: string) -> bool,
 }
