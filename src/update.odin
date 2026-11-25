@@ -755,3 +755,128 @@ update_print_json :: proc(state: ^State, candidates: []Update_Candidate, mode: U
 	fmt.wprintln(env.out, string(data))
 	return true
 }
+
+// `krs update -u`: chooses upgrades like `krs update`, then writes them to
+// .krs/packages.json and installs them. Pinned packages never move.
+command_update_upgrade :: proc(env: ^Env, options: Options, names: []string) -> bool {
+	state := state_open(env, options) or_return
+	defer state_close(state)
+	query := update_query_make(env, options, names) or_return
+	defer update_query_destroy(query)
+
+	for name in query.names {
+		record := manifest_find(&state.manifest, name)
+		if record == nil {
+			return fail(env, "%s was not installed by krs in %s", name, state.shared)
+		}
+
+		if record.linked != "" {
+			return fail(env, "%s is linked; run krs unlink %s first", name, name)
+		}
+
+		pin := packages_find(&state.packages, name)
+		if pin == nil {
+			imports, scanned := scan_directory_imports(state.env.project, path_base(state.env.project))
+			if !scanned {
+				return fail(env, "cannot read the Odin files under %s", state.env.project)
+			}
+
+			if !slice.contains(imports[:], name) {
+				return fail(env, "%s is not used by this project; run krs update in a project that imports it", name)
+			}
+
+			// The old single-package update started from the root's tag when the project had no record of its own.
+			append(
+				&state.packages.packages,
+				Package_Record{name = name, source = record.source, tag = record.tag, commit = record.commit, hash = record.hash},
+			)
+			pin = packages_find(&state.packages, name)
+		}
+
+		if pin != nil && pin.pinned && !options.update.pin {
+			return fail(env, "%s is pinned at %s; add --pin to move and re-pin it, or run %s", name, pin.tag, fmt.tprintf("krs unpin %s", name))
+		}
+
+		tag := query.name_tags[name]
+		if tag == "" || tag != record.tag || (pin != nil && pin.tag != tag) {
+			continue
+		}
+
+		// A missing repository is reported by update_candidates.
+		repository, found := repository_find(state, name, tag, record.source)
+		if !found {
+			continue
+		}
+
+		repository_tag_commit(env, repository.path, name, tag, record.commit) or_return
+		success(env, "%s is already at %s", name, tag)
+		if len(query.names) == 1 {
+			return true
+		}
+	}
+
+	candidates := update_candidates(state, query) or_return
+	if options.update.pin {
+		// A named pinned package moves and is pinned again at the new version.
+		for &candidate in candidates {
+			if candidate.pinned && slice.contains(query.names, candidate.name) {
+				candidate.pinned = false
+				state.pin_names[candidate.name] = true
+			}
+		}
+	}
+
+	return update_apply(state, candidates[:], options)
+}
+
+// Moves every unpinned candidate to its chosen release in one plan. Pinned
+// candidates are listed as held and never moved. Confirmation reads
+// state.options.yes; callers must open the state with the same options.
+update_apply :: proc(state: ^State, candidates: []Update_Candidate, options: Options) -> bool {
+	if options.yes {
+		state.options.yes = true
+	}
+
+	queued := 0
+	for candidate in candidates {
+		if candidate.pinned {
+			info(state.env, "%s is pinned at %s; %s is available", candidate.name, candidate.current, candidate.chosen)
+			continue
+		}
+
+		compatibility := Version_Compatibility.Breaking
+		if current, current_ok := parse_tag(candidate.current); current_ok {
+			chosen, _ := parse_tag(candidate.chosen)
+			compatibility = version_compatibility(current, chosen)
+		}
+
+		say_version_change(state.env, candidate.name, candidate.current, candidate.chosen, compatibility)
+		update_report_dependants(state, candidate.name, candidate.chosen)
+		append(
+			&state.queue,
+			Request {
+				name = candidate.name,
+				tag = candidate.chosen,
+				source = candidate.source,
+				by = "krs update",
+				kind = .Update,
+				recorded = true,
+				source_trusted = true,
+			},
+		)
+		if options.update.pin {
+			state.pin_names[candidate.name] = true
+		}
+		queued += 1
+	}
+
+	if queued == 0 {
+		success(state.env, "every package of this project is at its target version")
+		return true
+	}
+
+	plan_discover(state) or_return
+	plan_drain(state) or_return
+
+	return plan_apply(state)
+}

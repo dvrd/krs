@@ -40,6 +40,7 @@ State :: struct {
 	fetch_configured: bool,
 	version_answers:  map[Version_Conflict]string,
 	version_question: Version_Conflict,
+	pin_names:        map[string]bool, // pinned by this run's --pin
 	// Per-command caches, kept across resolution passes; never persisted.
 	repositories:     map[string]Repository_Lookup, // key: path + (cached ? "\x00cached" : "")
 	tag_commits:      map[[2]string]string, // {path, tag} -> commit

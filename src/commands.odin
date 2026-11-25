@@ -348,11 +348,8 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 		ok = command_install(env, options)
 	case words[0] == "status" && len(words) == 1:
 		ok = command_status(env, options)
-	case words[0] == "update" && options.update.upgrade && len(words) == 2:
-		ok = command_update(env, options, words[1])
 	case words[0] == "update" && options.update.upgrade:
-		fail(env, "-u needs exactly one package name for now")
-		return EXIT_USAGE
+		ok = command_update_upgrade(env, options, words[1:])
 	case words[0] == "update":
 		ok = command_check(env, options, words[1:])
 	case words[0] == "fetch" && len(words) == 1:
@@ -504,86 +501,6 @@ update_report_dependants :: proc(state: ^State, name, tag: string) {
 			say(state.env, "  %s %s recorded %s %s", record.name, record.tag, name, pin.tag)
 		}
 	}
-}
-
-command_update :: proc(env: ^Env, options: Options, target: string) -> bool {
-	name := target
-	tag := ""
-	at := strings.index_byte(target, '@')
-	if at >= 0 {
-		name = target[:at]
-		tag = target[at + 1:]
-		if _, valid := parse_tag(tag); !valid {
-			return fail(env, "%s is not a vMAJOR.MINOR.PATCH tag", tag)
-		}
-	}
-
-	if options.frozen {
-		return fail(env, "--frozen does not apply to update")
-	}
-
-	state := state_open(env, options) or_return
-	defer state_close(state)
-	record := manifest_find(&state.manifest, name)
-	if record == nil {
-		return fail(env, "%s was not installed by krs in %s", name, state.shared)
-	}
-
-	if record.linked != "" {
-		return fail(env, "%s is linked; run krs unlink %s first", name, name)
-	}
-
-	pin := packages_find(&state.packages, name)
-	if pin != nil && pin.pinned {
-		return fail(env, "%s is pinned at %s; run %s first", name, pin.tag, fmt.tprintf("krs unpin %s", name))
-	}
-
-	if pin == nil {
-		imports, scanned := scan_directory_imports(state.env.project, path_base(state.env.project))
-		if !scanned {
-			return fail(env, "cannot read the Odin files under %s", state.env.project)
-		}
-
-		if !slice.contains(imports[:], name) {
-			return fail(env, "%s is not used by this project; run krs update in a project that imports it", name)
-		}
-	}
-
-	if options.fetch {
-		refresh_package_cache(state, name, record.source)
-	}
-
-	repository, found := repository_find(state, name, tag, record.source)
-	if !found {
-		return fail(env, "no usable repository for \"%s\" in the source directories or repository store", name)
-	}
-
-	if tag == "" {
-		tag, _ = highest_tag(repository.tags[:])
-	}
-
-	if tag == record.tag && (pin == nil || pin.tag == tag) {
-		repository_tag_commit(env, repository.path, name, tag, record.commit) or_return
-		success(env, "%s is already at %s", name, tag)
-		return true
-	}
-
-	from := pin.tag if pin != nil else record.tag
-	old_version, old_ok := parse_tag(from)
-	new_version, _ := parse_tag(tag)
-	compatibility := Version_Compatibility.Breaking
-	if old_ok {
-		compatibility = version_compatibility(old_version, new_version)
-	}
-
-	say_version_change(env, name, from, tag, compatibility)
-	update_report_dependants(state, name, tag)
-
-	append(&state.queue, Request{name = name, tag = tag, source = record.source, by = "krs update", kind = .Update, recorded = true, source_trusted = true})
-	plan_discover(state) or_return
-	plan_drain(state) or_return
-
-	return plan_apply(state)
 }
 
 // Prints `name from -> to (compatibility)` for an available or chosen update.

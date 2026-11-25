@@ -64,7 +64,7 @@ plan_packages :: proc(state: ^State) -> Packages_File {
 					tag = decision.tag,
 					commit = decision.commit,
 					hash = decision.hash,
-					pinned = existing != nil && existing.pinned,
+					pinned = (existing != nil && existing.pinned) || state.pin_names[name],
 				},
 			)
 		case .Linked, .Unmanaged:
