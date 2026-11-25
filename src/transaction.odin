@@ -322,30 +322,66 @@ journal_revert :: proc(env: ^Env, database: ^db.SQLite_DB, id: i64, changes: []J
 	return journal_cleanup(env, database, id, changes)
 }
 
-journal_recover_record :: proc(env: ^Env, database: ^db.SQLite_DB, current: Journal_Scope, record: Journal_Record) -> bool {
-	locks: [2]^os.File
-	defer scope_unlock(&locks)
-	scope_lock(env, record.scope, current, &locks) or_return
+Recover_Result :: enum {
+	Done,    // the record was reverted or cleaned up and deleted
+	Skipped, // the record stays; nothing in it can damage the current scope
+	Blocked, // the record stays and the command must not continue
+}
 
-	changes: []Journal_Change
+// Decodes the changes of a record and checks each against the record's scope.
+journal_decode_changes :: proc(env: ^Env, record: Journal_Record) -> (changes: []Journal_Change, ok: bool) {
 	if err := json.unmarshal(record.payload, &changes); err != nil || len(changes) == 0 {
-		return fail(env, "cannot decode the changes in transaction %d", record.id)
+		return nil, fail(env, "cannot decode the changes in transaction %d", record.id)
 	}
 
 	for change in changes {
 		if !journal_change_valid(record.scope, change) {
-			return fail(env, "invalid path in transaction %d", record.id)
+			return nil, fail(env, "invalid path in transaction %d", record.id)
 		}
+	}
+	return changes, true
+}
+
+// Only a pending record with a change under the current scope can leave that
+// scope half published. Every other failure leaves the record for later.
+journal_recover_record :: proc(
+	env: ^Env,
+	database: ^db.SQLite_DB,
+	current: Journal_Scope,
+	record: Journal_Record,
+) -> Recover_Result {
+	changes, decoded := journal_decode_changes(env, record)
+	if !decoded {
+		return .Blocked if record.phase == .Pending else .Skipped
+	}
+	assert(len(changes) > 0)
+
+	in_scope := false
+	for change in changes {
+		if journal_change_valid(current, change) {
+			in_scope = true
+		}
+	}
+
+	failed := Recover_Result.Blocked if record.phase == .Pending && in_scope else Recover_Result.Skipped
+	locks: [2]^os.File
+	defer scope_unlock(&locks)
+	if !scope_lock(env, record.scope, current, &locks) {
+		return failed
 	}
 
 	switch record.phase {
 	case .Pending:
-		journal_revert(env, database, record.id, changes) or_return
+		if !journal_revert(env, database, record.id, changes) {
+			return failed
+		}
 		info(env, "restored the previous state after interrupted transaction %d", record.id)
 	case .Settled:
-		journal_cleanup(env, database, record.id, changes) or_return
+		if !journal_cleanup(env, database, record.id, changes) {
+			return failed
+		}
 	}
-	return true
+	return .Done
 }
 
 journal_recover :: proc(env: ^Env, scope: Journal_Scope) -> bool {
@@ -359,7 +395,14 @@ journal_recover :: proc(env: ^Env, scope: Journal_Scope) -> bool {
 
 		records := journal_list(env, database, scope) or_return
 		for record in records {
-			journal_recover_record(env, database, scope, record) or_return
+			switch journal_recover_record(env, database, scope, record) {
+			case .Done:
+			case .Skipped:
+				warn(env, "cannot recover transaction %d yet; run %s to inspect it", record.id, "krs recover")
+			case .Blocked:
+				note(env, "run %s to inspect transaction %d", "krs recover", record.id)
+				return false
+			}
 		}
 	}
 	return true
