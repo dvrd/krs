@@ -37,6 +37,74 @@ alpha_recording_beta :: proc(fixture: ^Fixture, alpha_tag, beta_tag: string) {
 	library_release(fixture, "alpha", alpha_tag, "beta")
 }
 
+// `name` is released recording `dependency` at `dependency_tag`.
+library_recording :: proc(fixture: ^Fixture, name, tag, dependency, dependency_tag: string) {
+	commit := git(fixture.t, krs.path_join(fixture.sources, dependency), "rev-parse", fmt.aprintf("%s^{{commit}}", dependency_tag))
+	pins := fmt.aprintf(
+		"{{\"format\": 1, \"packages\": [{{\"name\": \"%s\", \"source\": \"local\", \"tag\": \"%s\", \"commit\": \"%s\", \"hash\": \"\"}}]}}\n",
+		dependency,
+		dependency_tag,
+		commit,
+	)
+
+	if !os.is_directory(krs.path_join(fixture.sources, name)) {
+		repository_make(fixture, name)
+	}
+	write_file(fixture.t, krs.path_join(fixture.sources, fmt.aprintf("%s/.krs/packages.json", name)), pins)
+	library_release(fixture, name, tag, dependency)
+}
+
+@(test)
+unpinned_import_defers_to_a_pin_visited_second :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	library_release(&fixture, "gamma", "v1.2.0")
+	library_release(&fixture, "gamma", "v1.4.0")
+	library_release(&fixture, "alpha", "v1.0.0", "gamma")
+	library_recording(&fixture, "beta", "v1.0.0", "gamma", "v1.2.0")
+	project_imports(&fixture, "alpha", "beta")
+
+	expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
+	expect_release(&fixture, "gamma", "v1.2.0")
+}
+
+@(test)
+unpinned_import_defers_to_a_pin_visited_first :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	library_release(&fixture, "gamma", "v1.2.0")
+	library_release(&fixture, "gamma", "v1.4.0")
+	library_recording(&fixture, "alpha", "v1.0.0", "gamma", "v1.2.0")
+	library_release(&fixture, "beta", "v1.0.0", "gamma")
+	project_imports(&fixture, "alpha", "beta")
+
+	expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
+	expect_release(&fixture, "gamma", "v1.2.0")
+}
+
+@(test)
+unpinned_import_does_not_raise_a_breaking_question :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	library_release(&fixture, "gamma", "v1.2.0")
+	library_release(&fixture, "gamma", "v2.0.0")
+	library_release(&fixture, "alpha", "v1.0.0", "gamma")
+	library_recording(&fixture, "beta", "v1.0.0", "gamma", "v1.2.0")
+	project_imports(&fixture, "alpha", "beta")
+
+	result := run(&fixture, "", "install", "--yes")
+	expect_ok(&fixture, result)
+	expect_release(&fixture, "gamma", "v1.2.0")
+	testing.expect(t, !strings.contains(result.err, "needs a decision"), result.err)
+	testing.expect(t, !strings.contains(result.out, "are not compatible"), result.out)
+}
+
 @(test)
 compatible_difference_takes_the_higher :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
