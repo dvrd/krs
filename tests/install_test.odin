@@ -249,7 +249,31 @@ altered_install_is_reported :: proc(t: ^testing.T) {
 }
 
 @(test)
-moved_tag_is_refused :: proc(t: ^testing.T) {
+os_metadata_does_not_alter_an_install :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	library_release(&fixture, "beta", "v0.1.0")
+	project_imports(&fixture, "beta")
+	expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
+
+	write_file(t, krs.path_join(fixture.shared, "beta/.DS_Store"), "x")
+	write_file(t, krs.path_join(fixture.shared, "beta/._beta.odin"), "x")
+	write_file(t, krs.path_join(fixture.shared, "beta/sub/Thumbs.db"), "x")
+
+	result := run(&fixture, "", "install")
+	expect_ok(&fixture, result)
+	testing.expect(t, !strings.contains(result.out, "does not match the hash recorded"), result.out)
+	expect_ok(&fixture, run(&fixture, "", "install", "--frozen"))
+
+	// An added non-metadata file is still detected.
+	write_file(t, krs.path_join(fixture.shared, "beta/extra.odin"), "package beta\n")
+	expect_failure(&fixture, run(&fixture, "", "install", "--frozen"), "does not match its recorded hash")
+}
+
+@(test)
+moved_tag_is_refused ::proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	fixture := fixture_make(t)
 	defer fixture_destroy(&fixture)

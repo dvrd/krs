@@ -34,8 +34,9 @@ File_Walk :: enum {
 	Installed,
 }
 
-// Installed files must be regular files and directories. Source walks ignore
-// Git metadata, and project scans also skip hidden directories.
+// Installed files must be regular files and directories; installed walks skip
+// OS metadata files (is_os_metadata). Source walks ignore Git metadata, and
+// project scans also skip hidden directories.
 list_files :: proc(base, relative: string, walk: File_Walk, files: ^[dynamic]string) -> bool {
 	pending: [dynamic]string
 	defer delete(pending)
@@ -52,6 +53,10 @@ list_files :: proc(base, relative: string, walk: File_Walk, files: ^[dynamic]str
 			child := path_join(directory, entry.name)
 			#partial switch entry.type {
 			case .Regular:
+				if walk == .Installed && is_os_metadata(entry.name) {
+					continue
+				}
+
 				append(files, child)
 			case .Directory:
 				if walk != .Installed && (entry.name == ".git" || (walk == .Project && strings.has_prefix(entry.name, "."))) {
@@ -125,6 +130,17 @@ is_licence_file :: proc(name: string) -> bool {
 	return false
 }
 
+// Files an operating system's file manager creates on its own. They are never
+// installed and never count as a change to an installed package.
+is_os_metadata :: proc(name: string) -> bool {
+	switch name {
+	case ".DS_Store", "Thumbs.db", "ehthumbs.db", "desktop.ini":
+		return true
+	}
+
+	return strings.has_prefix(name, "._") // AppleDouble files on non-Apple volumes
+}
+
 select_reference :: proc(selection: ^Selection, known, chosen: ^map[string]bool, file, reference: string) {
 	target, ok := path_clean_relative(path_join(path_directory(file), reference))
 	if !ok || strings.has_prefix(reference, "/") || !strings.has_prefix(target, selection.prefix) {
@@ -164,7 +180,14 @@ select_directory :: proc(selection: ^Selection, files: []string, chosen: ^map[st
 // Decides which files of a release are installed: the Odin files, the files
 // they name, and the licence and notice files.
 select_files :: proc(source: Source, name: string) -> (selection: Selection, ok: bool) {
-	files := source_list(source) or_return
+	listed := source_list(source) or_return
+	files: [dynamic]string
+	for file in listed {
+		if !is_os_metadata(path_base(file)) {
+			append(&files, file)
+		}
+	}
+
 	known: map[string]bool
 	for file in files {
 		known[file] = true
