@@ -5,6 +5,7 @@ import "core:log"
 import "core:os"
 import "core:strings"
 import "core:testing"
+import "core:time"
 
 import krs "../src"
 
@@ -1959,6 +1960,40 @@ doctor_times_out_and_reverts :: proc(t: ^testing.T) {
 	expect_contains(&fixture, result.out, "timed out")
 	expect_release(&fixture, "beta", "v0.1.0")
 	testing.expect_value(t, packages_text(&fixture), before)
+}
+
+@(test)
+doctor_timeout_stops_the_whole_command :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	release_beta_upgrade(&fixture)
+	marker := krs.path_join(fixture.base, "krs-032-marker")
+	// Only the trial with beta v0.2.0 hangs. Its background child would
+	// outlive a killed shell and create the marker.
+	test := fmt.aprintf(
+		"--doctor-test=if grep -q 'RELEASE :: \"v0.2.0\"' %s/beta/beta.odin; then ( sleep 2; touch '%s' ) & sleep 37; fi",
+		fixture.shared,
+		marker,
+	)
+	result := run(&fixture, "", "update", "-u", "--doctor", "--yes", "--doctor-timeout=1s", test)
+	testing.expectf(t, result.code == 1, "exit %d\nout: %s\nerr: %s", result.code, result.out, result.err)
+	expect_contains(&fixture, result.out, "timed out")
+	time.sleep(3 * time.Second)
+	testing.expectf(t, !os.exists(marker), "a child of the test command survived the timeout")
+	expect_release(&fixture, "beta", "v0.1.0")
+}
+
+@(test)
+doctor_recovery_command_shows_at_quiet_levels :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	release_beta_upgrade(&fixture)
+	result := run(&fixture, "", "update", "-u", "--doctor", "--yes", "--doctor-test=true", "--loglevel", "error")
+	expect_contains(&fixture, result.err, "if this run stops early, restore with:")
 }
 
 @(test)

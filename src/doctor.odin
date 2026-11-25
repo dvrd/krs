@@ -5,7 +5,6 @@ import "core:os"
 import "core:slice"
 import "core:strconv"
 import "core:strings"
-import "core:time"
 
 // `krs update -u --doctor`: upgrade, run the project's tests, and keep only
 // the upgrades that pass. Every revert replays a snapshot of the lockfile
@@ -91,7 +90,7 @@ doctor_timeout_seconds :: proc(text: string) -> (seconds: i64, ok: bool) {
 // Runs `command` with `/bin/sh -c` in the project directory, with
 // ODIN_ROOT set to `root`. `ok` is false when the process could not run at
 // all (not a test failure). A command still running after `seconds` is
-// killed and counts as failed; only /bin/sh is killed, not its children.
+// killed with its whole process group and counts as failed.
 doctor_command :: proc(env: ^Env, root, command: string, seconds: i64) -> (run: Doctor_Run, ok: bool) {
 	assert(root != "")
 	assert(command != "")
@@ -120,22 +119,19 @@ doctor_command :: proc(env: ^Env, root, command: string, seconds: i64) -> (run: 
 
 	arguments := []string{"/bin/sh", "-c", command}
 	progress_start(env, "Running tests")
-	process, start_err := os.process_start(
-		{working_dir = env.project, command = arguments, env = child_environment[:], stdout = output, stderr = output},
-	)
+	process, start_err := doctor_spawn(env.project, arguments, child_environment[:], output)
 	if start_err != nil {
 		progress_stop(env)
 		return run, fail(env, "cannot run %s: %v", command, start_err)
 	}
 
-	process_state, wait_err := os.process_wait(process, time.Duration(seconds) * time.Second)
-	if wait_err == os.General_Error.Timeout {
+	exited, exit_code, timed_out, wait_err := doctor_wait(process, seconds)
+	if timed_out {
 		progress_stop(env)
-		if kill_err := os.process_kill(process); kill_err != nil {
-			warn(env, "cannot stop the test command: %v", kill_err)
+		if wait_err != nil {
+			warn(env, "cannot stop the test command: %v", wait_err)
 		}
 
-		_, _ = os.process_wait(process)
 		run.passed = false
 		run.output = fmt.aprintf("timed out after %ds", seconds)
 		return run, true
@@ -151,7 +147,7 @@ doctor_command :: proc(env: ^Env, root, command: string, seconds: i64) -> (run: 
 		return run, fail(env, "cannot read the output of %s: %v", command, read_err)
 	}
 
-	run.passed = process_state.exited && process_state.exit_code == 0
+	run.passed = exited && exit_code == 0
 	run.output = strings.clone(doctor_tail(string(data)))
 	return run, true
 }
