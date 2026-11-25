@@ -75,6 +75,20 @@ git_resolve_tag :: proc(repo: ^Git_Repository, tag: string) -> (commit: ^Git_Obj
 	return
 }
 
+// Commits are 40 (SHA-1) or 64 (SHA-256) lowercase hexadecimal characters.
+is_commit_id :: proc(text: string) -> bool {
+	if len(text) != 40 && len(text) != 64 {
+		return false
+	}
+
+	for character in transmute([]byte)text {
+		if !(character >= '0' && character <= '9') && !(character >= 'a' && character <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 git_tag_commit :: proc(directory, tag: string) -> (commit_id: string, ok: bool) {
 	repo := git_open(directory) or_return
 	defer git_close(repo)

@@ -792,3 +792,34 @@ status_rejects_write_options :: proc(t: ^testing.T) {
 
 	expect_failure(&fixture, run(&fixture, "", "status", "--yes"), "status takes only --root")
 }
+
+@(test)
+dependency_pins_with_invalid_fields_are_refused :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+
+	Row :: struct { tag, commit, expected: string }
+	for row in ([2]Row{
+		{tag = "latest", commit = "", expected = "records beta with an invalid tag"},
+		{tag = "v0.1.0", commit = "zz", expected = "records beta with an invalid commit"},
+	}) {
+		fixture := fixture_make(t)
+		defer fixture_destroy(&fixture)
+
+		library_release(&fixture, "beta", "v0.1.0")
+		commit := row.commit
+		if commit == "" {
+			commit = git(t, krs.path_join(fixture.sources, "beta"), "rev-parse", "v0.1.0^{commit}")
+		}
+		pins := fmt.aprintf(
+			"{{\"format\": 1, \"packages\": [{{\"name\": \"beta\", \"source\": \"local\", \"tag\": \"%s\", \"commit\": \"%s\", \"hash\": \"\"}}]}}\n",
+			row.tag,
+			commit,
+		)
+		repository_make(&fixture, "alpha")
+		write_file(t, krs.path_join(fixture.sources, "alpha/.krs/packages.json"), pins)
+		library_release(&fixture, "alpha", "v1.0.0", "beta")
+		project_imports(&fixture, "alpha")
+
+		expect_failure(&fixture, run(&fixture, "", "install", "--yes"), row.expected)
+	}
+}

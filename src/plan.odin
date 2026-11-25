@@ -546,9 +546,39 @@ release_pins :: proc(release: Git_Release) -> (pins: Packages_File, problem: str
 		return {}, "cannot be read"
 	case .Read:
 		problem = json_record_problem(data, &pins)
-		return
+		if problem != "" {
+			return
+		}
+		return pins, pins_problem(pins)
 	}
 	unreachable()
+}
+
+// A dependency's pins are not trusted: each field must have its expected shape.
+// The offending values are not printed.
+pins_problem :: proc(pins: Packages_File) -> string {
+	for record in pins.packages {
+		if !is_package_name(record.name) {
+			return fmt.aprintf("has an invalid package name")
+		}
+
+		if record.tag != "" {
+			if _, valid := parse_tag(record.tag); !valid {
+				return fmt.aprintf("records %s with an invalid tag", record.name)
+			}
+		}
+
+		if record.commit != "" && !is_commit_id(record.commit) {
+			return fmt.aprintf("records %s with an invalid commit", record.name)
+		}
+
+		for character in transmute([]byte)record.source {
+			if character < 0x20 || character == 0x7f {
+				return fmt.aprintf("records %s with an invalid source", record.name)
+			}
+		}
+	}
+	return ""
 }
 
 // Queues what a decided package itself imports.
