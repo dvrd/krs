@@ -520,6 +520,28 @@ plan_collect_requests :: proc(state: ^State, roots: []Request) -> (next: [dynami
 	return
 }
 
+// Runs one resolution pass with its output held back. The caller's env is
+// restored however the pass ends.
+plan_pass :: proc(state: ^State, buffered: ^Env, requests, roots: []Request) -> (next: [dynamic]Request, resolved, expanded_ok: bool) {
+	original := state.env
+	state.env = buffered
+	defer state.env = original
+
+	resolved = true
+	for request in requests {
+		if !plan_request(state, request) {
+			resolved = false
+		}
+	}
+
+	if !plan_choose_defaults(state) {
+		resolved = false
+	}
+
+	next, expanded_ok = plan_collect_requests(state, roots)
+	return
+}
+
 // Recompute decisions from the requests of the previous pass. Treat errors
 // and version questions as provisional until the reachable graph stabilizes.
 plan_drain :: proc(state: ^State) -> bool {
@@ -547,19 +569,8 @@ plan_drain :: proc(state: ^State) -> bool {
 		strings.builder_reset(&output)
 		strings.builder_reset(&errors)
 
-		state.env = &buffered
-		resolved := true
-		for request in requests {
-			if !plan_request(state, request) {
-				resolved = false
-			}
-		}
-
-		if !plan_choose_defaults(state) {
-			resolved = false
-		}
-		next, expanded_ok := plan_collect_requests(state, roots)
-		state.env = env
+		next, resolved, expanded_ok := plan_pass(state, &buffered, requests, roots)
+		assert(state.env == env)
 
 		if slice.equal(requests, next[:]) {
 			question := state.version_question
