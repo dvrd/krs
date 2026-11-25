@@ -179,6 +179,38 @@ frozen_installs_exactly_what_is_recorded :: proc(t: ^testing.T) {
 }
 
 @(test)
+recorded_hash_mismatch_is_refused :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	library_release(&fixture, "beta", "v0.1.0")
+	project_imports(&fixture, "beta")
+	expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
+
+	// The record names the right tag and commit but different bytes.
+	path := krs.path_join(fixture.project, krs.PACKAGES_PATH)
+	text := packages_text(&fixture)
+	start := strings.index(text, "\"hash\": \"")
+	if !testing.expect(t, start >= 0 && len(text) >= start + 9 + 64, text) {
+		return
+	}
+
+	// The 64 characters after `"hash": "` must be the lowercase hex digest.
+	for c in text[start + 9:start + 9 + 64] {
+		testing.expect(t, strings.contains_rune("0123456789abcdef", c), text)
+	}
+	tampered := strings.concatenate({text[:start + 9], strings.repeat("0", 64), text[start + 9 + 64:]})
+	write_file(t, path, tampered)
+
+	other := krs.path_join(fixture.base, "other-root")
+	os.make_directory_all(other)
+	result := run(&fixture, "", "install", "--frozen", fmt.aprintf("--root=%s", other))
+	expect_failure(&fixture, result, "beta v0.1.0 does not match the content hash this project recorded")
+	testing.expect(t, !os.exists(krs.path_join(other, "shared/beta")))
+}
+
+@(test)
 unmanaged_directory_is_left_alone :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	fixture := fixture_make(t)
@@ -189,14 +221,18 @@ unmanaged_directory_is_left_alone :: proc(t: ^testing.T) {
 	unmanaged := krs.path_join(fixture.shared, "beta/beta.odin")
 	write_file(t, unmanaged, "package beta\n\nHAND_WRITTEN :: true\n")
 	write_file(t, krs.path_join(fixture.shared, "beta/.git/HEAD"), "ref: refs/heads/main\n")
-	before, _ := krs.hash_directory(krs.path_join(fixture.shared, "beta"))
+	before, before_ok := krs.hash_directory(krs.path_join(fixture.shared, "beta"))
+	testing.expect(t, before_ok, "the unmanaged directory can be hashed")
 	project_imports(&fixture, "beta")
 
 	result := run(&fixture, "", "install", "--yes")
 	expect_ok(&fixture, result)
 
-	after, _ := krs.hash_directory(krs.path_join(fixture.shared, "beta"))
+	after, after_ok := krs.hash_directory(krs.path_join(fixture.shared, "beta"))
+	testing.expect(t, after_ok, "the unmanaged directory can still be hashed")
 	testing.expect_value(t, after, before)
+	testing.expect_value(t, read_file(unmanaged), "package beta\n\nHAND_WRITTEN :: true\n")
+	testing.expect_value(t, read_file(krs.path_join(fixture.shared, "beta/.git/HEAD")), "ref: refs/heads/main\n")
 	expect_contains(&fixture, read_file(unmanaged), "HAND_WRITTEN")
 	testing.expect(t, os.exists(krs.path_join(fixture.shared, "beta/.git/HEAD")))
 	testing.expect(t, !strings.contains(packages_text(&fixture), "beta"))

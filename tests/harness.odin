@@ -83,8 +83,21 @@ git :: proc(t: ^testing.T, directory: string, arguments: ..string) -> string {
 	append(&command, "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", "-c", "init.defaultBranch=main")
 	append(&command, ..arguments)
 
-	state, stdout, stderr, err := os.process_exec({command = command[:]}, context.allocator)
-	testing.expectf(t, err == nil && state.exit_code == 0, "git %v failed: %s", arguments, string(stderr))
+	// The fixture must not depend on the developer's Git configuration or on
+	// GIT_* variables inherited from a hook.
+	environment, _ := os.environ(context.allocator)
+	isolated: [dynamic]string
+	for entry in environment {
+		if strings.has_prefix(entry, "GIT_") {
+			continue
+		}
+
+		append(&isolated, entry)
+	}
+	append(&isolated, "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
+
+	state, stdout, stderr, err := os.process_exec({command = command[:], env = isolated[:]}, context.allocator)
+	testing.expectf(t, err == nil && state.exit_code == 0, "git %v failed (%v, exit %d): %s", arguments, err, state.exit_code, string(stderr))
 
 	return strings.trim_space(string(stdout))
 }

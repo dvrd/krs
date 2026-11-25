@@ -360,6 +360,32 @@ update_listing_reports_unavailable_sources :: proc(t: ^testing.T) {
 }
 
 @(test)
+unlink_restore_prefers_the_project_pin :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	library_release(&fixture, "beta", "v0.1.0")
+	project_imports(&fixture, "beta")
+	expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
+
+	// A second project on the same root moves the shared release forward.
+	second := fixture
+	second.project = krs.path_join(fixture.base, "second")
+	os.make_directory_all(second.project)
+	project_imports(&second, "beta")
+	library_release(&fixture, "beta", "v0.2.0")
+	expect_ok(&second, run(&second, "", "update", "beta", "--yes"))
+	expect_release(&fixture, "beta", "v0.2.0")
+	expect_contains(&fixture, packages_text(&second), "\"tag\": \"v0.2.0\"")
+	expect_contains(&fixture, packages_text(&fixture), "\"tag\": \"v0.1.0\"")
+
+	expect_ok(&fixture, run(&fixture, "", "link", "beta"))
+	expect_ok(&fixture, run(&fixture, "", "unlink", "beta", "--restore", "--yes"))
+	expect_release(&fixture, "beta", "v0.1.0")
+}
+
+@(test)
 link_and_unlink :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	fixture := fixture_make(t)
@@ -369,7 +395,8 @@ link_and_unlink :: proc(t: ^testing.T) {
 	project_imports(&fixture, "alpha")
 	expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
 	recorded := packages_text(&fixture)
-	installed_hash, _ := krs.hash_directory(krs.path_join(fixture.shared, "alpha"))
+	installed_hash, installed_ok := krs.hash_directory(krs.path_join(fixture.shared, "alpha"))
+	testing.expect(t, installed_ok, "the installed package can be hashed")
 
 	expect_ok(&fixture, run(&fixture, "", "link", "alpha"))
 	link := krs.path_join(fixture.shared, "alpha")
@@ -420,7 +447,8 @@ link_and_unlink :: proc(t: ^testing.T) {
 	expect_contains(&fixture, unlinked.out, "src/assets/unused.js is not named by any Odin file")
 	testing.expect(t, !krs.is_symbolic_link(link))
 	expect_release(&fixture, "alpha", "v0.1.0")
-	restored_hash, _ := krs.hash_directory(link)
+	restored_hash, restored_ok := krs.hash_directory(link)
+	testing.expect(t, restored_ok, "the restored package can be hashed")
 	testing.expect_value(t, restored_hash, installed_hash)
 	testing.expect(t, !strings.contains(manifest_text(&fixture), "linked"))
 	testing.expect_value(t, packages_text(&fixture), recorded)

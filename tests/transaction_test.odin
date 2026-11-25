@@ -171,6 +171,32 @@ simultaneous_commands_share_the_odin_root_lock :: proc(t: ^testing.T) {
 	expect_ok(&second, run(&second, "", "install", "--yes"))
 }
 
+@(test)
+simultaneous_commands_share_the_project_lock :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	output := strings.builder_make()
+	env := krs.Env{
+		project = fixture.project,
+		home = fixture.home,
+		default_root = fixture.root,
+		err = strings.to_writer(&output),
+	}
+	state, ok := krs.state_open(&env, {})
+	if !testing.expect(t, ok, strings.to_string(output)) {
+		return
+	}
+
+	other := krs.path_join(fixture.base, "other-root")
+	os.make_directory_all(krs.path_join(other, "shared"))
+	root_option := fmt.aprintf("--root=%s", other)
+	expect_failure(&fixture, run(&fixture, "", "install", "--yes", root_option), "cannot lock")
+	krs.state_close(state)
+	expect_ok(&fixture, run(&fixture, "", "install", "--yes", root_option))
+}
+
 JOURNAL_BEFORE :: `{"format":1,"packages":[],"test":"before"}`
 JOURNAL_AFTER :: `{"format":1,"packages":[],"test":"after"}`
 
