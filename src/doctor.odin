@@ -2,6 +2,7 @@ package krs
 
 import "core:fmt"
 import "core:os"
+import "core:slice"
 import "core:strconv"
 import "core:strings"
 import "core:time"
@@ -15,8 +16,6 @@ DOCTOR_TEST_VENDOR :: "odin test . -collection:shared=vendor"
 DOCTOR_OUTPUT_LINES :: 20 // lines of test output shown for a failure
 DOCTOR_TIMEOUT :: 30 * 60 // seconds a doctor command may run without --doctor-timeout
 DOCTOR_TIMEOUT_LIMIT :: 24 * 3600
-DOCTOR_RECOVERY :: "git checkout -- .krs/packages.json && krs install --yes"
-DOCTOR_RECOVERY_VENDOR :: "git checkout -- .krs/packages.json vendor && krs install --yes"
 
 Doctor_Run :: struct {
 	passed: bool,
@@ -285,10 +284,32 @@ doctor_report :: proc(env: ^Env, kept, broken: []Doctor_Verdict) {
 	}
 }
 
+// The command that moves every unpinned, unlinked package of `snapshot` back
+// to its recorded release. It does not remove packages a trial added.
+doctor_recovery :: proc(snapshot: Packages_File, linked: []string) -> string {
+	builder := strings.builder_make(context.temp_allocator)
+	strings.write_string(&builder, "krs update -u --yes")
+	named := 0
+	for record in snapshot.packages {
+		// update -u never moves a pinned package and refuses a linked one.
+		if record.pinned || slice.contains(linked, record.name) {
+			continue
+		}
+
+		fmt.sbprintf(&builder, " %s@%s", record.name, record.tag)
+		named += 1
+	}
+
+	if named == 0 {
+		return "krs install --yes"
+	}
+	return strings.to_string(builder)
+}
+
 // After a failed revert: the report so far, then how to get back by hand.
-doctor_restore_failed :: proc(env: ^Env, vendored: bool, snapshot: Packages_File, kept, broken: []Doctor_Verdict) -> bool {
+doctor_restore_failed :: proc(env: ^Env, linked: []string, snapshot: Packages_File, kept, broken: []Doctor_Verdict) -> bool {
 	doctor_report(env, kept, broken)
-	fail(env, "could not restore the previous versions; restore with: %s", DOCTOR_RECOVERY_VENDOR if vendored else DOCTOR_RECOVERY)
+	fail(env, "could not restore the previous versions; restore with: %s", doctor_recovery(snapshot, linked))
 	for record in snapshot.packages {
 		say(env, "    %s %s", record.name, record.tag)
 	}
@@ -353,6 +374,12 @@ command_update_doctor :: proc(env: ^Env, options: Options, names: []string) -> b
 
 	snapshot := Packages_File{format = state.packages.format}
 	append(&snapshot.packages, ..state.packages.packages[:])
+	linked := make([dynamic]string, context.temp_allocator)
+	for record in state.manifest.packages {
+		if record.linked != "" {
+			append(&linked, strings.clone(record.name, context.temp_allocator))
+		}
+	}
 	vendored := state.vendored
 	root := state.scope.root
 	shared := state.shared
@@ -399,7 +426,7 @@ command_update_doctor :: proc(env: ^Env, options: Options, names: []string) -> b
 
 	// Baseline: the tests must pass before anything changes.
 	info(env, "tests: %s", doctor_test_command(yes_options, vendored))
-	note(env, "if this run stops early, restore with: %s", DOCTOR_RECOVERY_VENDOR if vendored else DOCTOR_RECOVERY)
+	note(env, "if this run stops early, restore with: %s", doctor_recovery(snapshot, linked[:]))
 	baseline := doctor_check(env, yes_options, root, vendored) or_return
 	if !baseline.passed {
 		fail(env, "the tests fail before upgrading; --doctor needs a passing baseline")
@@ -424,7 +451,7 @@ command_update_doctor :: proc(env: ^Env, options: Options, names: []string) -> b
 	together, together_ran := doctor_check(env, yes_options, root, vendored)
 	if !together_ran {
 		if !doctor_restore(env, yes_options, snapshot, before_bytes) {
-			return doctor_restore_failed(env, vendored, snapshot, kept[:], broken[:])
+			return doctor_restore_failed(env, linked[:], snapshot, kept[:], broken[:])
 		}
 		return false
 	}
@@ -436,7 +463,7 @@ command_update_doctor :: proc(env: ^Env, options: Options, names: []string) -> b
 
 	warn(env, "the upgrades together break the tests; trying each one alone")
 	if !doctor_restore(env, yes_options, snapshot, before_bytes) {
-		return doctor_restore_failed(env, vendored, snapshot, kept[:], broken[:])
+		return doctor_restore_failed(env, linked[:], snapshot, kept[:], broken[:])
 	}
 
 	// One at a time, in list order.
@@ -454,7 +481,7 @@ command_update_doctor :: proc(env: ^Env, options: Options, names: []string) -> b
 		alone, alone_ran := doctor_check(env, yes_options, root, vendored)
 		if !alone_ran {
 			if !doctor_restore(env, yes_options, round_snapshot, round_bytes) {
-				return doctor_restore_failed(env, vendored, round_snapshot, kept[:], broken[:])
+				return doctor_restore_failed(env, linked[:], round_snapshot, kept[:], broken[:])
 			}
 			return false
 		}
@@ -466,7 +493,7 @@ command_update_doctor :: proc(env: ^Env, options: Options, names: []string) -> b
 
 		append(&broken, Doctor_Verdict{candidate = candidate, output = alone.output})
 		if !doctor_restore(env, yes_options, round_snapshot, round_bytes) {
-			return doctor_restore_failed(env, vendored, round_snapshot, kept[:], broken[:])
+			return doctor_restore_failed(env, linked[:], round_snapshot, kept[:], broken[:])
 		}
 	}
 

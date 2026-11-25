@@ -1866,10 +1866,34 @@ doctor_reports_a_failed_restore :: proc(t: ^testing.T) {
 	result := run(&fixture, "", "update", "-u", "--doctor", "--yes", test)
 	testing.expectf(t, result.code == 1, "exit %d\nout: %s\nerr: %s", result.code, result.out, result.err)
 	expect_contains(&fixture, result.err, "could not restore the previous versions")
-	expect_contains(&fixture, result.err, "git checkout -- .krs/packages.json")
+	expect_contains(&fixture, result.err, "krs update -u --yes beta@v0.4.0 gamma@v0.1.0")
 
+	// The printed command, end to end.
 	testing.expect(t, os.rename(gone, beta) == nil)
+	expect_ok(&fixture, run(&fixture, "", "update", "-u", "--yes", "beta@v0.4.0", "gamma@v0.1.0"))
+	expect_release(&fixture, "beta", "v0.4.0")
+	expect_release(&fixture, "gamma", "v0.1.0")
 	expect_ok(&fixture, run(&fixture, "", "install", "--frozen"))
+}
+
+@(test)
+doctor_recovery_command_restores :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	library_release(&fixture, "beta", "v0.1.0")
+	project_imports(&fixture, "beta")
+	expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
+	library_release(&fixture, "beta", "v0.1.1")
+
+	// The state an interrupted trial leaves: the newer release recorded and installed.
+	expect_ok(&fixture, run(&fixture, "", "update", "-u", "--yes"))
+	expect_release(&fixture, "beta", "v0.1.1")
+
+	expect_ok(&fixture, run(&fixture, "", "update", "-u", "--yes", "beta@v0.1.0"))
+	expect_release(&fixture, "beta", "v0.1.0")
+	testing.expect_value(t, record_of(&fixture, "beta").tag, "v0.1.0")
 }
 
 @(test)
