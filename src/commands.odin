@@ -26,6 +26,10 @@ USAGE_FORMAT :: `%[0]susage:%[1]s
       use a checkout's live src/ in place of a release
   krs %[0]slink ls%[1]s [--root=<path>]
       list the links and flag broken ones
+  krs %[0]spin%[1]s <package> [--root=<path>]
+      hold a package at the release this project records
+  krs %[0]sunpin%[1]s <package> [--root=<path>]
+      let a pinned package be upgraded again
   krs %[0]sunlink%[1]s <package> [--root=<path>] [--restore] [--yes]
       remove a link; with --restore, install the recorded release
   krs %[0]srecover%[1]s
@@ -162,6 +166,11 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 		return EXIT_USAGE
 	}
 
+	if (words[0] == "pin" || words[0] == "unpin") && (options.frozen || options.yes) {
+		fail(env, "%s does not apply to %s", "--frozen" if options.frozen else "--yes", words[0])
+		return EXIT_USAGE
+	}
+
 	ok := false
 	switch {
 	case words[0] == "install" && len(words) == 1:
@@ -184,6 +193,10 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 		ok = command_link(env, options, words[1])
 	case words[0] == "unlink" && len(words) == 2:
 		ok = command_unlink(env, options, words[1])
+	case words[0] == "pin" && len(words) == 2:
+		ok = command_pin(env, options, words[1], true)
+	case words[0] == "unpin" && len(words) == 2:
+		ok = command_pin(env, options, words[1], false)
 	case words[0] == "recover" && len(words) == 1:
 		if options.yes {
 			fail(env, "--yes only applies to recover abandon")
@@ -213,6 +226,47 @@ command_install :: proc(env: ^Env, options: Options) -> bool {
 	plan_drain(state) or_return
 
 	return plan_apply(state)
+}
+
+// `krs pin` and `krs unpin`: set or clear the hold on one recorded package.
+// Writes only the project lockfile.
+command_pin :: proc(env: ^Env, options: Options, name: string, pinned: bool) -> bool {
+	if !is_package_name(name) {
+		return fail(env, "\"%s\" is not a usable package name", name)
+	}
+
+	state := state_open(env, options) or_return
+	defer state_close(state)
+	record := packages_find(&state.packages, name)
+	if record == nil {
+		return fail(env, "%s is not recorded in %s; run krs install first", name, PACKAGES_PATH)
+	}
+
+	if record.tag == "" {
+		return fail(env, "%s has no recorded release to pin", name)
+	}
+
+	if record.pinned == pinned {
+		if pinned {
+			info(env, "%s is already pinned at %s", name, record.tag)
+		} else {
+			info(env, "%s is not pinned", name)
+		}
+		return true
+	}
+
+	record.pinned = pinned
+	transaction := Transaction{env = env, scope = state.scope}
+	defer transaction_close(&transaction)
+	stage_packages(&transaction, path_join(state.scope.project, PACKAGES_PATH), state.packages) or_return
+	transaction_commit(&transaction) or_return
+
+	if pinned {
+		success(env, "%s is pinned at %s", name, record.tag)
+	} else {
+		success(env, "%s is no longer pinned", name)
+	}
+	return true
 }
 
 // `krs update` with no argument: lists newer tags and changes nothing.
@@ -283,6 +337,11 @@ command_update_all :: proc(env: ^Env, options: Options) -> bool {
 	for record in state.manifest.packages {
 		pin := packages_find(&state.packages, record.name)
 		if record.linked != "" || pin == nil {
+			continue
+		}
+
+		if pin.pinned {
+			note(env, "%s is pinned at %s; skipped", record.name, pin.tag)
 			continue
 		}
 
@@ -408,6 +467,10 @@ command_update :: proc(env: ^Env, options: Options, target: string) -> bool {
 	}
 
 	pin := packages_find(&state.packages, name)
+	if pin != nil && pin.pinned {
+		return fail(env, "%s is pinned at %s; run %s first", name, pin.tag, fmt.tprintf("krs unpin %s", name))
+	}
+
 	if pin == nil {
 		imports, scanned := scan_directory_imports(state.env.project, path_base(state.env.project))
 		if !scanned {

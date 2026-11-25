@@ -22,6 +22,7 @@ Package_Record :: struct {
 	tag:    string,
 	commit: string,
 	hash:   string,
+	pinned: bool `json:"pinned,omitempty"`, // held at tag: never upgraded, never moved by a dependency
 }
 
 Packages_File :: struct {
@@ -142,6 +143,36 @@ stage_json :: proc(transaction: ^Transaction, path: string, value: any) -> bool 
 	}
 
 	return true
+}
+
+// Odin's JSON omitempty skips "" but not false, so the lockfile is written
+// through this shape: an unpinned record keeps the bytes it had before pins.
+Package_Record_Json :: struct {
+	name:   string,
+	source: string,
+	tag:    string,
+	commit: string,
+	hash:   string,
+	pinned: Maybe(bool) `json:"pinned,omitempty"`,
+}
+
+Packages_File_Json :: struct {
+	format:   int,
+	packages: [dynamic]Package_Record_Json,
+}
+
+// Writes a project lockfile; `pinned` appears only on pinned records.
+stage_packages :: proc(transaction: ^Transaction, path: string, file: Packages_File) -> bool {
+	out := Packages_File_Json{format = file.format}
+	for record in file.packages {
+		row := Package_Record_Json{name = record.name, source = record.source, tag = record.tag, commit = record.commit, hash = record.hash}
+		if record.pinned {
+			row.pinned = true
+		}
+
+		append(&out.packages, row)
+	}
+	return stage_json(transaction, path, out)
 }
 
 load_packages :: proc(env: ^Env) -> (file: Packages_File, ok: bool) {

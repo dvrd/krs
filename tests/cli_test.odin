@@ -29,6 +29,7 @@ cli_rejects_misuse :: proc(t: ^testing.T) {
 		{{"unlink", "beta", "--frozen"}, krs.EXIT_FAILED, "--frozen does not apply to unlink"},
 		{{"link", "ls", "--yes"}, krs.EXIT_FAILED, "link ls takes only --root"},
 		{{"link", ".hidden"}, krs.EXIT_FAILED, "is not a usable package name"},
+		{{"pin", "beta", "--yes"}, krs.EXIT_USAGE, "--yes does not apply to pin"},
 	}
 	for row in table {
 		result := run(&fixture, "", ..row.arguments)

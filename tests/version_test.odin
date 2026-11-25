@@ -1200,3 +1200,150 @@ resolver_output_is_stable :: proc(t: ^testing.T) {
 		)
 	}
 }
+
+@(test)
+pin_and_unpin_change_only_the_flag :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	library_release(&fixture, "beta", "v0.1.0")
+	project_imports(&fixture, "beta")
+	expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
+	manifest := manifest_text(&fixture)
+
+	pinned := run(&fixture, "", "pin", "beta")
+	expect_ok(&fixture, pinned)
+	expect_contains(&fixture, pinned.out, "beta is pinned at v0.1.0")
+	expect_contains(&fixture, packages_text(&fixture), "\"pinned\": true")
+	testing.expect_value(t, manifest_text(&fixture), manifest)
+
+	again := run(&fixture, "", "pin", "beta")
+	expect_ok(&fixture, again)
+	expect_contains(&fixture, again.out, "beta is already pinned at v0.1.0")
+
+	unpinned := run(&fixture, "", "unpin", "beta")
+	expect_ok(&fixture, unpinned)
+	expect_contains(&fixture, unpinned.out, "beta is no longer pinned")
+	testing.expect(t, !strings.contains(packages_text(&fixture), "pinned"))
+	testing.expect_value(t, manifest_text(&fixture), manifest)
+
+	expect_failure(&fixture, run(&fixture, "", "pin", "gamma"), "is not recorded")
+}
+
+@(test)
+unpinned_lockfiles_do_not_gain_a_pinned_key :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	library_release(&fixture, "beta", "v0.1.0")
+	project_imports(&fixture, "beta")
+	expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
+	expect_contains(&fixture, packages_text(&fixture), "\"tag\": \"v0.1.0\"")
+	testing.expect(t, !strings.contains(packages_text(&fixture), "pinned"))
+}
+
+@(test)
+install_keeps_a_pin :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	library_release(&fixture, "beta", "v0.1.0")
+	library_release(&fixture, "gamma", "v0.1.0")
+	project_imports(&fixture, "beta")
+	expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
+	expect_ok(&fixture, run(&fixture, "", "pin", "beta"))
+
+	// A new import makes install rewrite the lockfile; the pin survives it.
+	project_imports(&fixture, "beta", "gamma")
+	expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
+	expect_contains(&fixture, packages_text(&fixture), "\"name\": \"gamma\"")
+	expect_contains(&fixture, packages_text(&fixture), "\"pinned\": true")
+}
+
+@(test)
+dependency_cannot_move_a_pinned_package :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	library_release(&fixture, "beta", "v0.4.0")
+	project_imports(&fixture, "beta")
+	expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
+	expect_ok(&fixture, run(&fixture, "", "pin", "beta"))
+
+	library_release(&fixture, "beta", "v0.4.2")
+	alpha_recording_beta(&fixture, "v1.0.0", "v0.4.2")
+	project_imports(&fixture, "alpha", "beta")
+
+	result := run(&fixture, "", "install", "--yes")
+	expect_ok(&fixture, result)
+	expect_release(&fixture, "beta", "v0.4.0")
+	expect_contains(&fixture, result.out, "was asked for explicitly")
+	expect_contains(&fixture, packages_text(&fixture), "\"tag\": \"v0.4.0\"")
+	expect_contains(&fixture, packages_text(&fixture), "\"pinned\": true")
+}
+
+@(test)
+update_refuses_a_pinned_package :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	library_release(&fixture, "beta", "v0.1.0")
+	project_imports(&fixture, "beta")
+	expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
+	expect_ok(&fixture, run(&fixture, "", "pin", "beta"))
+	library_release(&fixture, "beta", "v0.2.0")
+
+	expect_failure(&fixture, run(&fixture, "", "update", "beta", "--yes"), "is pinned")
+	expect_release(&fixture, "beta", "v0.1.0")
+}
+
+@(test)
+install_refuses_a_pin_the_root_has_moved :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	a := fixture_make(t)
+	defer fixture_destroy(&a)
+
+	library_release(&a, "beta", "v0.4.0")
+	project_imports(&a, "beta")
+	expect_ok(&a, run(&a, "", "install", "--yes"))
+	expect_ok(&a, run(&a, "", "pin", "beta"))
+
+	b := fixture_make(t)
+	defer fixture_destroy(&b)
+	b.root = a.root
+	b.shared = a.shared
+	b.home = a.home
+	b.sources = a.sources
+	library_release(&a, "beta", "v0.4.2")
+	project_imports(&b, "beta")
+	expect_ok(&b, run(&b, "", "install", "--yes"))
+	expect_ok(&b, run(&b, "", "update", "beta@v0.4.2", "--yes"))
+	expect_release(&a, "beta", "v0.4.2")
+
+	recorded := packages_text(&a)
+	expect_failure(&a, run(&a, "", "install", "--yes"), "is pinned at v0.4.0")
+	testing.expect_value(t, packages_text(&a), recorded)
+}
+
+@(test)
+update_all_skips_a_pinned_package :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	library_release(&fixture, "beta", "v0.4.0")
+	project_imports(&fixture, "beta")
+	expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
+	expect_ok(&fixture, run(&fixture, "", "pin", "beta"))
+	library_release(&fixture, "beta", "v0.4.2")
+
+	result := run(&fixture, "", "update", "--all", "--yes")
+	expect_ok(&fixture, result)
+	expect_release(&fixture, "beta", "v0.4.0")
+	expect_contains(&fixture, result.out, "is pinned at v0.4.0; skipped")
+}

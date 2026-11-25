@@ -55,6 +55,7 @@ plan_packages :: proc(state: ^State) -> Packages_File {
 
 		switch decision.action {
 		case .Keep, .Install:
+			existing := packages_find(&state.packages, name)
 			append(
 				&file.packages,
 				Package_Record {
@@ -63,6 +64,7 @@ plan_packages :: proc(state: ^State) -> Packages_File {
 					tag = decision.tag,
 					commit = decision.commit,
 					hash = decision.hash,
+					pinned = existing != nil && existing.pinned,
 				},
 			)
 		case .Linked, .Unmanaged:
@@ -253,7 +255,7 @@ plan_apply :: proc(state: ^State, project_pins := Project_Pins.Record) -> bool {
 	}
 
 	if project_pins == .Record && !packages_equal(&packages, &state.packages) {
-		stage_json(&transaction, path_join(state.scope.project, PACKAGES_PATH), packages) or_return
+		stage_packages(&transaction, path_join(state.scope.project, PACKAGES_PATH), packages) or_return
 	}
 
 	transaction_commit(&transaction) or_return

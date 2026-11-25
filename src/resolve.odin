@@ -441,10 +441,21 @@ plan_request :: proc(state: ^State, request: Request) -> bool {
 		decision = decision_create(state, request.name)
 		pin := packages_find(&state.packages, request.name)
 		if pin != nil && request.kind == .Dependency {
+			// A pin is never reconciled with what shared/ holds; plan 025 turns this case into vendor/.
+			if pin.pinned && decision.action == .Keep && decision.tag != pin.tag {
+				decision.failed = true
+				return fail(state.env, "%s is pinned at %s but %s holds %s; run %s, or %s", pin.name, pin.tag, state.shared, decision.tag, "krs vendor", fmt.tprintf("krs unpin %s", pin.name))
+			}
+
 			own := Request{name = pin.name, tag = pin.tag, commit = pin.commit, source = pin.source, by = "this project", source_trusted = true}
 			if !decision_apply(state, decision, own) {
 				decision.failed = true
 				return false
+			}
+
+			// A pinned package keeps the project's tag; dependency requests only note it.
+			if pin.pinned {
+				decision.forced = true
 			}
 		}
 	}
