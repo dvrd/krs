@@ -815,6 +815,27 @@ command_update_upgrade :: proc(env: ^Env, options: Options, names: []string) -> 
 		}
 	}
 
+	// The root's shared/ belongs to every project on it. When it holds another
+	// version of a package this project pins, this project moves to vendor/
+	// instead of changing the root under the other projects.
+	if !state.vendored && options.update.install != .Never {
+		divergent: ^Package_Record
+		for &record in state.packages.packages {
+			installed := manifest_find(&state.manifest, record.name)
+			if record.pinned && installed != nil && installed.linked == "" && installed.tag != record.tag {
+				divergent = &record
+				break
+			}
+		}
+
+		if divergent != nil {
+			vendor := path_join(state.scope.project, VENDOR_DIR)
+			note(env, "%s is pinned at %s but %s holds another version; this project moves to %s", divergent.name, divergent.tag, state.shared, vendor)
+			vendor_enter(state) or_return
+			plan_reset(state)
+		}
+	}
+
 	candidates := update_candidates(state, query) or_return
 	if options.update.pin {
 		// A named pinned package moves and is pinned again at the new version.
