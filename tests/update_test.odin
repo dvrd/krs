@@ -723,15 +723,20 @@ update_install_never_only_writes_the_lockfile :: proc(t: ^testing.T) {
 	fixture := fixture_make(t)
 	defer fixture_destroy(&fixture)
 
-	release_beta_upgrade(&fixture)
+	// A compatible release: `krs install` asks before a breaking one, as usual.
+	library_release(&fixture, "beta", "v0.1.0")
+	project_imports(&fixture, "beta")
+	expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
+	library_release(&fixture, "beta", "v0.1.1")
 	manifest := manifest_text(&fixture)
 	expect_ok(&fixture, run(&fixture, "", "update", "-u", "--install=never"))
-	expect_contains(&fixture, packages_text(&fixture), "\"tag\": \"v0.2.0\"")
+	expect_contains(&fixture, packages_text(&fixture), "\"tag\": \"v0.1.1\"")
 	testing.expect_value(t, manifest_text(&fixture), manifest)
 	expect_release(&fixture, "beta", "v0.1.0")
 
 	expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
-	expect_release(&fixture, "beta", "v0.2.0")
+	expect_release(&fixture, "beta", "v0.1.1")
+	expect_ok(&fixture, run(&fixture, "", "install", "--frozen"))
 }
 
 @(test)

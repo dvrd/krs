@@ -818,7 +818,7 @@ command_update_upgrade :: proc(env: ^Env, options: Options, names: []string) -> 
 	// The root's shared/ belongs to every project on it. When it holds another
 	// version of a package this project pins, this project moves to vendor/
 	// instead of changing the root under the other projects.
-	if !state.vendored && options.update.install != .Never {
+	if !state.vendored {
 		divergent: ^Package_Record
 		for &record in state.packages.packages {
 			installed := manifest_find(&state.manifest, record.name)
@@ -828,7 +828,12 @@ command_update_upgrade :: proc(env: ^Env, options: Options, names: []string) -> 
 			}
 		}
 
-		if divergent != nil {
+		// `krs install` would move the root's copy under the other projects.
+		if divergent != nil && options.update.install == .Never {
+			note(env, "%s is pinned at %s but %s holds another version; run %s before installing", divergent.name, divergent.tag, state.shared, "krs vendor")
+		}
+
+		if divergent != nil && options.update.install != .Never {
 			vendor := path_join(state.scope.project, VENDOR_DIR)
 			note(env, "%s is pinned at %s but %s holds another version; this project moves to %s", divergent.name, divergent.tag, state.shared, vendor)
 			vendor_enter(state) or_return
@@ -898,6 +903,15 @@ update_apply :: proc(state: ^State, candidates: []Update_Candidate, options: Opt
 
 	plan_discover(state) or_return
 	plan_drain(state) or_return
+	if options.update.install == .Never {
+		return plan_record_only(state)
+	}
+
+	// --install=always is the confirmation. This runs after the vendor/ switch,
+	// which still asks on its own.
+	if options.update.install == .Always {
+		state.options.yes = true
+	}
 
 	return plan_apply(state)
 }
