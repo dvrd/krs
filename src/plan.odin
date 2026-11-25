@@ -503,6 +503,10 @@ decision_selection :: proc(state: ^State, decision: ^Decision, release: Git_Rele
 	}
 
 	selection, ok := select_files(Source{release = release}, decision.name)
+	if !ok && selection.problem != "" {
+		return fail(state.env, "cannot install %s %s: %v", decision.name, decision.tag, selection.problem)
+	}
+
 	if !ok {
 		return fail(state.env, "cannot read %s %s from %s", decision.name, decision.tag, decision.repository)
 	}

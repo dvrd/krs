@@ -452,3 +452,29 @@ install_reports_a_load_into_a_submodule :: proc(t: ^testing.T) {
 
 	expect_contains(&fixture, result.out, "inside submodule src/vendor")
 }
+
+@(test)
+install_refuses_case_colliding_paths :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	path := repository_make(&fixture, "alpha")
+	write_file(t, krs.path_join(path, "src/alpha.odin"), "package alpha\n\nA :: #load(\"Data.txt\", string)\nB :: #load(\"data.txt\", string)\n")
+	git(t, path, "add", "src/alpha.odin")
+
+	// The blob lives outside the repository so `git add` never sees it. Both
+	// index entries are added with case-sensitive matching.
+	blob_source := krs.path_join(fixture.base, "blob.txt")
+	write_file(t, blob_source, "data\n")
+	blob := git(t, path, "hash-object", "-w", blob_source)
+	git(t, path, "-c", "core.ignorecase=false", "update-index", "--add", "--cacheinfo", fmt.aprintf("100644,%s,src/Data.txt", blob))
+	git(t, path, "-c", "core.ignorecase=false", "update-index", "--add", "--cacheinfo", fmt.aprintf("100644,%s,src/data.txt", blob))
+	git(t, path, "commit", "--quiet", "-m", "v0.1.0")
+	git(t, path, "tag", "v0.1.0")
+
+	project_imports(&fixture, "alpha")
+	expect_failure(&fixture, run(&fixture, "", "install", "--yes"), "differ only in letter case")
+
+	testing.expect(t, !krs.path_present(krs.path_join(fixture.shared, "alpha")))
+}

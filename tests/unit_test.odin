@@ -21,6 +21,20 @@ tag_form :: proc(t: ^testing.T) {
 }
 
 @(test)
+tree_names_reject_git_metadata_and_controls :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+
+	// "‌" is ZERO WIDTH NON-JOINER, which some filesystems ignore.
+	for bad in ([]string{".git", ".GIT", ".Git", ".g‌it", "a\x1bb", "", ".", ".."}) {
+		testing.expectf(t, krs.git_tree_name_problem(bad) != "", "%q should be refused", bad)
+	}
+
+	for good in ([]string{".github", "git", "x.odin"}) {
+		testing.expectf(t, krs.git_tree_name_problem(good) == "", "%q should be allowed", good)
+	}
+}
+
+@(test)
 version_rules :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 

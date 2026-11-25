@@ -26,6 +26,7 @@ Selection :: struct {
 	imports:  [dynamic]string,
 	warnings: [dynamic]string,
 	prefix:   string, // "src/" when the repository has one, otherwise ""
+	problem:  string, // why the release cannot be installed, when select_files fails
 }
 
 File_Walk :: enum {
@@ -282,7 +283,37 @@ select_files :: proc(source: Source, name: string) -> (selection: Selection, ok:
 	})
 	slice.sort(selection.imports[:])
 
+	selection.problem = select_install_path_problem(selection.files[:])
+	if selection.problem != "" {
+		return selection, false
+	}
+
 	return selection, true
+}
+
+// Why the sorted install paths cannot be written into `shared/`, or "". A
+// component must be a safe name, and no two paths may differ only in letter
+// case, which a case-insensitive filesystem would merge.
+select_install_path_problem :: proc(files: []Selected_File) -> string {
+	for file in files {
+		for component in strings.split(file.install_path, "/") {
+			if reason := git_tree_name_problem(component); reason != "" {
+				return fmt.aprintf("%s %s", file.install_path, reason)
+			}
+		}
+	}
+
+	seen: map[string]string
+	defer delete(seen)
+	for file in files {
+		folded := strings.to_lower(file.install_path)
+		if earlier, found := seen[folded]; found {
+			return fmt.aprintf("%s and %s differ only in letter case", earlier, file.install_path)
+		}
+		seen[folded] = file.install_path
+	}
+
+	return ""
 }
 
 Hasher :: struct {
