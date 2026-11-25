@@ -152,3 +152,11 @@ journal_list :: proc(env: ^Env, database: ^db.SQLite_DB, scope: Journal_Scope) -
 	journal_check(env, "cannot read pending transactions", error) or_return
 	return rows, true
 }
+
+journal_list_all :: proc(env: ^Env, database: ^db.SQLite_DB) -> (records: []Journal_Record, ok: bool) {
+	rows, error := db.query_many(database,
+		"SELECT id, project, odin_root, phase, changes FROM journal_v1 ORDER BY id",
+		{}, journal_decode_row)
+	journal_check(env, "cannot read pending transactions", error) or_return
+	return rows, true
+}

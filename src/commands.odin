@@ -4,6 +4,7 @@ import "core:fmt"
 import "core:io"
 import "core:os"
 import "core:slice"
+import "core:strconv"
 import "core:strings"
 
 USAGE_FORMAT :: `%[0]susage:%[1]s
@@ -14,6 +15,8 @@ USAGE_FORMAT :: `%[0]susage:%[1]s
   krs %[0]slink%[1]s <package> [--root=<path>] [--yes]
   krs %[0]slink ls%[1]s [--root=<path>]
   krs %[0]sunlink%[1]s <package> [--root=<path>] [--restore] [--yes]
+  krs %[0]srecover%[1]s
+  krs %[0]srecover abandon%[1]s <id> [--yes]
   krs %[0]s--version%[1]s
   krs %[0]s--help%[1]s
 
@@ -81,6 +84,16 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 		return EXIT_USAGE
 	}
 
+	if len(words) > 0 && words[0] == "recover" && options.root != "" {
+		fail(env, "--root does not apply to recover")
+		return EXIT_USAGE
+	}
+
+	if len(words) > 0 && words[0] == "recover" && options.frozen {
+		fail(env, "--frozen does not apply to recover")
+		return EXIT_USAGE
+	}
+
 	if len(words) == 0 {
 		print_usage(env.err, env.style.stderr && env.style.color)
 		return EXIT_USAGE
@@ -104,6 +117,19 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 		ok = command_link(env, options, words[1])
 	case words[0] == "unlink" && len(words) == 2:
 		ok = command_unlink(env, options, words[1])
+	case words[0] == "recover" && len(words) == 1:
+		if options.yes {
+			fail(env, "--yes only applies to recover abandon")
+			return EXIT_USAGE
+		}
+		ok = command_recover_list(env)
+	case words[0] == "recover" && len(words) == 3 && words[1] == "abandon":
+		id, parsed := strconv.parse_i64(words[2])
+		if !parsed || id <= 0 {
+			fail(env, "%s is not a transaction id", words[2])
+			return EXIT_USAGE
+		}
+		ok = command_recover_abandon(env, options, id)
 	case:
 		print_usage(env.err, env.style.stderr && env.style.color)
 		return EXIT_USAGE
