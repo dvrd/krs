@@ -2,6 +2,7 @@ package tests
 
 import "core:encoding/json"
 import "core:fmt"
+import "core:os"
 import "core:strings"
 import "core:testing"
 
@@ -232,8 +233,6 @@ update_invalid_pattern_and_values :: proc(t: ^testing.T) {
 		{{"update", "--yes=1"}, "unknown option --yes=1"},
 		{{"install", "-t", "patch"}, "-t only applies to update"},
 		{{"status", "--json-upgraded"}, "--json-upgraded only applies to update"},
-		{{"update", "-u"}, "-u needs exactly one package name for now"},
-		{{"update", "-u", "beta", "gamma"}, "-u needs exactly one package name for now"},
 	}
 	for row in table {
 		result := run(&fixture, "", ..row.arguments)
@@ -570,4 +569,350 @@ update_json_outputs :: proc(t: ^testing.T) {
 	unavailable := run(&fixture, "", "update", "--json-upgraded")
 	expect_failure(&fixture, unavailable, "could not check")
 	testing.expect_value(t, unavailable.out, "")
+}
+
+// The project's record for `name`, read from .krs/packages.json.
+record_of :: proc(fixture: ^Fixture, name: string, loc := #caller_location) -> krs.Package_Record {
+	file: krs.Packages_File
+	err := json.unmarshal(transmute([]byte)packages_text(fixture), &file)
+	testing.expectf(fixture.t, err == nil, "cannot read %s: %v", krs.PACKAGES_PATH, err, loc = loc)
+	for record in file.packages {
+		if record.name == name {
+			return record
+		}
+	}
+
+	testing.expectf(fixture.t, false, "%s is not recorded", name, loc = loc)
+	return {}
+}
+
+// beta v0.1.0 installed by a project that imports it; v0.2.0 released.
+release_beta_upgrade :: proc(fixture: ^Fixture) {
+	library_release(fixture, "beta", "v0.1.0")
+	project_imports(fixture, "beta")
+	expect_ok(fixture, run(fixture, "", "install", "--yes"))
+	library_release(fixture, "beta", "v0.2.0")
+}
+
+// Project A pins beta v0.1.0 and imports an unpinned gamma v0.1.0. Project B,
+// on the same Odin root, then moves the root's beta to v0.2.0. Returns B.
+pinned_divergence :: proc(a: ^Fixture) -> Fixture {
+	library_release(a, "beta", "v0.1.0")
+	library_release(a, "gamma", "v0.1.0")
+	project_imports(a, "beta", "gamma")
+	expect_ok(a, run(a, "", "install", "--yes"))
+	expect_ok(a, run(a, "", "pin", "beta"))
+
+	b := fixture_make(a.t)
+	b.root = a.root
+	b.shared = a.shared
+	b.home = a.home
+	b.sources = a.sources
+	project_imports(&b, "beta")
+	expect_ok(&b, run(&b, "", "install", "--yes"))
+	library_release(a, "beta", "v0.2.0")
+	expect_ok(&b, run(&b, "", "update", "-u", "--yes"))
+	expect_release(a, "beta", "v0.2.0")
+	return b
+}
+
+@(test)
+update_u_moves_an_unpinned_package :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	release_beta_upgrade(&fixture)
+	expect_ok(&fixture, run(&fixture, "", "update", "-u", "--yes"))
+	expect_release(&fixture, "beta", "v0.2.0")
+	expect_contains(&fixture, packages_text(&fixture), "\"tag\": \"v0.2.0\"")
+}
+
+@(test)
+update_without_u_writes_nothing :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	release_beta_upgrade(&fixture)
+	packages, manifest := packages_text(&fixture), manifest_text(&fixture)
+	expect_ok(&fixture, run(&fixture, "", "update"))
+	testing.expect_value(t, packages_text(&fixture), packages)
+	testing.expect_value(t, manifest_text(&fixture), manifest)
+}
+
+@(test)
+update_u_keeps_a_pinned_package :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	library_release(&fixture, "beta", "v0.1.0")
+	project_imports(&fixture, "beta")
+	expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
+	expect_ok(&fixture, run(&fixture, "", "pin", "beta"))
+	library_release(&fixture, "beta", "v0.2.0")
+
+	result := run(&fixture, "", "update", "-u", "--yes")
+	expect_ok(&fixture, result)
+	expect_contains(&fixture, result.out, "is pinned")
+	expect_release(&fixture, "beta", "v0.1.0")
+}
+
+@(test)
+update_u_moves_to_vendor_when_the_root_differs :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	a := fixture_make(t)
+	defer fixture_destroy(&a)
+	b := pinned_divergence(&a)
+	defer fixture_destroy(&b)
+
+	library_release(&a, "gamma", "v0.1.1")
+	before := manifest_text(&a)
+	result := run(&a, "", "update", "-u", "--yes")
+	expect_ok(&a, result)
+	expect_contains(&a, result.out, "-collection:shared=vendor")
+	expect_contains(&a, read_file(krs.path_join(a.project, "vendor/beta/beta.odin")), "RELEASE :: \"v0.1.0\"")
+	expect_contains(&a, read_file(krs.path_join(a.project, "vendor/gamma/gamma.odin")), "RELEASE :: \"v0.1.1\"")
+	testing.expect(t, os.exists(krs.path_join(a.project, "vendor/.krs/manifest.json")))
+
+	// The root, which project B uses, is left as it was.
+	testing.expect_value(t, manifest_text(&a), before)
+	expect_release(&a, "beta", "v0.2.0")
+	expect_contains(&a, read_file(krs.path_join(a.root, "shared/gamma/gamma.odin")), "RELEASE :: \"v0.1.0\"")
+
+	beta := record_of(&a, "beta")
+	testing.expect_value(t, beta.tag, "v0.1.0")
+	testing.expect(t, beta.pinned)
+	testing.expect_value(t, record_of(&a, "gamma").tag, "v0.1.1")
+}
+
+@(test)
+update_install_always_still_asks_before_vendoring :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	a := fixture_make(t)
+	defer fixture_destroy(&a)
+	b := pinned_divergence(&a)
+	defer fixture_destroy(&b)
+
+	library_release(&a, "gamma", "v0.1.1")
+	before := manifest_text(&a)
+	expect_failure(&a, run(&a, "", "update", "-u", "--install=always"), "confirmation is needed")
+	testing.expect(t, !os.exists(krs.path_join(a.project, krs.VENDOR_DIR)))
+	testing.expect_value(t, manifest_text(&a), before)
+}
+
+@(test)
+update_vendor_yes_then_upgrade_no :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	a := fixture_make(t)
+	defer fixture_destroy(&a)
+	b := pinned_divergence(&a)
+	defer fixture_destroy(&b)
+
+	library_release(&a, "gamma", "v0.1.1")
+	result := run(&a, "y\nn\n", "update", "-u")
+	expect_failure(&a, result, "nothing was changed")
+	testing.expect(t, os.exists(krs.path_join(a.project, "vendor/beta")))
+	testing.expect_value(t, record_of(&a, "gamma").tag, "v0.1.0")
+}
+
+@(test)
+update_install_never_only_writes_the_lockfile :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	release_beta_upgrade(&fixture)
+	manifest := manifest_text(&fixture)
+	expect_ok(&fixture, run(&fixture, "", "update", "-u", "--install=never"))
+	expect_contains(&fixture, packages_text(&fixture), "\"tag\": \"v0.2.0\"")
+	testing.expect_value(t, manifest_text(&fixture), manifest)
+	expect_release(&fixture, "beta", "v0.1.0")
+
+	expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
+	expect_release(&fixture, "beta", "v0.2.0")
+}
+
+@(test)
+update_install_prompt_needs_confirmation :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	release_beta_upgrade(&fixture)
+	expect_failure(&fixture, run(&fixture, "", "update", "-u"), "confirmation is needed")
+	expect_failure(&fixture, run(&fixture, "", "update", "-u", "--install", "prompt"), "confirmation is needed")
+	expect_release(&fixture, "beta", "v0.1.0")
+
+	expect_ok(&fixture, run(&fixture, "y\n", "update", "-u"))
+	expect_release(&fixture, "beta", "v0.2.0")
+}
+
+@(test)
+update_install_always_does_not_ask :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	release_beta_upgrade(&fixture)
+	expect_ok(&fixture, run(&fixture, "", "update", "-u", "--install=always"))
+	expect_release(&fixture, "beta", "v0.2.0")
+}
+
+@(test)
+update_pin_pins_the_chosen_version :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	release_beta_upgrade(&fixture)
+	expect_ok(&fixture, run(&fixture, "", "update", "-u", "--pin", "--yes"))
+	expect_contains(&fixture, packages_text(&fixture), "\"pinned\": true")
+	expect_contains(&fixture, packages_text(&fixture), "\"tag\": \"v0.2.0\"")
+	expect_release(&fixture, "beta", "v0.2.0")
+}
+
+@(test)
+update_explicit_tag :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	release_beta_upgrade(&fixture)
+	library_release(&fixture, "beta", "v0.3.0")
+	expect_ok(&fixture, run(&fixture, "", "update", "beta@v0.2.0", "-u", "--yes"))
+	expect_release(&fixture, "beta", "v0.2.0")
+
+	result := run(&fixture, "", "update", "beta@v9.9.9", "-u", "--yes")
+	expect_failure(&fixture, result, "could not check 1 package(s)")
+	expect_contains(&fixture, result.out, "has no tag v9.9.9")
+	expect_release(&fixture, "beta", "v0.2.0")
+}
+
+@(test)
+update_explicit_tag_on_a_pinned_package_needs_pin :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	release_beta_upgrade(&fixture)
+	expect_ok(&fixture, run(&fixture, "", "pin", "beta"))
+	expect_failure(&fixture, run(&fixture, "", "update", "beta@v0.2.0", "-u", "--yes"), "add --pin")
+	expect_release(&fixture, "beta", "v0.1.0")
+
+	expect_ok(&fixture, run(&fixture, "", "update", "beta@v0.2.0", "-u", "--pin", "--yes"))
+	expect_release(&fixture, "beta", "v0.2.0")
+	beta := record_of(&fixture, "beta")
+	testing.expect_value(t, beta.tag, "v0.2.0")
+	testing.expect(t, beta.pinned)
+}
+
+@(test)
+update_upgrade_usage_errors :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	Usage :: struct {
+		arguments: []string,
+		text:      string,
+	}
+	table := []Usage {
+		{{"update", "-u", "--frozen"}, "--upgrade and --frozen cannot be combined"},
+		{{"update", "--pin"}, "--pin only applies to update -u"},
+		{{"update", "--install=never"}, "--install only applies to update -u"},
+		{{"install", "-u"}, "-u only applies to update"},
+		{{"install", "--pin"}, "--pin only applies to update"},
+		{{"update", "-u", "--install=sometimes"}, "--install takes always, never or prompt"},
+		{{"update", "-u", "--install"}, "--install needs a value"},
+		{{"update", "-u", "-g"}, "-u and --global cannot be combined"},
+		{{"update", "-u", "-e", "2"}, "--error-level cannot be combined with -u"},
+		{{"update", "-u", "--json-upgraded"}, "--json-upgraded cannot be combined with -u"},
+	}
+	for row in table {
+		result := run(&fixture, "", ..row.arguments)
+		testing.expectf(t, result.code == krs.EXIT_USAGE, "%v: exit %d, want %d\nerr: %s", row.arguments, result.code, krs.EXIT_USAGE, result.err)
+		expect_contains(&fixture, result.err, row.text)
+	}
+}
+
+@(test)
+update_u_semver_takes_compatible_tags_only :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	library_release(&fixture, "beta", "v0.4.0")
+	library_release(&fixture, "gamma", "v0.1.0")
+	project_imports(&fixture, "beta", "gamma")
+	expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
+	library_release(&fixture, "beta", "v0.4.1")
+	library_release(&fixture, "beta", "v0.5.0")
+	library_release(&fixture, "gamma", "v0.1.1")
+
+	expect_failure(&fixture, run(&fixture, "", "update", "-u", "-t", "semver"), "confirmation is needed")
+	expect_release(&fixture, "beta", "v0.4.0")
+
+	expect_ok(&fixture, run(&fixture, "", "update", "-u", "-t", "semver", "--yes"))
+	expect_release(&fixture, "beta", "v0.4.1")
+	expect_release(&fixture, "gamma", "v0.1.1")
+	expect_contains(&fixture, check_update(&fixture), "beta v0.4.1 -> v0.5.0")
+}
+
+@(test)
+update_u_semver_moves_a_stale_project_pin :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	other := fixture
+	other.project = krs.path_join(fixture.base, "other-app")
+	os.make_directory_all(other.project)
+
+	library_release(&fixture, "beta", "v0.4.0")
+	project_imports(&fixture, "beta")
+	project_imports(&other, "beta")
+	expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
+	expect_ok(&other, run(&other, "", "install", "--yes"))
+	library_release(&fixture, "beta", "v0.4.1")
+	expect_ok(&fixture, run(&fixture, "", "update", "beta", "-u", "--yes"))
+
+	expect_ok(&other, run(&other, "", "update", "-u", "-t", "semver", "--yes"))
+	expect_contains(&other, packages_text(&other), "\"tag\": \"v0.4.1\"")
+}
+
+@(test)
+update_u_changes_nothing_when_a_package_cannot_be_checked :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	library_release(&fixture, "beta", "v0.4.0")
+	library_release(&fixture, "gamma", "v0.1.0")
+	project_imports(&fixture, "beta", "gamma")
+	expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
+	library_release(&fixture, "gamma", "v0.1.1")
+	os.remove_all(krs.path_join(fixture.sources, "beta"))
+
+	expect_failure(&fixture, run(&fixture, "", "update", "-u", "-t", "semver", "--yes"), "could not check")
+	expect_release(&fixture, "gamma", "v0.1.0")
+}
+
+@(test)
+update_u_semver_skips_a_pinned_package :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	library_release(&fixture, "beta", "v0.4.0")
+	project_imports(&fixture, "beta")
+	expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
+	expect_ok(&fixture, run(&fixture, "", "pin", "beta"))
+	library_release(&fixture, "beta", "v0.4.2")
+
+	result := run(&fixture, "", "update", "-u", "-t", "semver", "--yes")
+	expect_ok(&fixture, result)
+	expect_release(&fixture, "beta", "v0.4.0")
+	expect_contains(&fixture, result.out, "beta is pinned at v0.4.0")
 }

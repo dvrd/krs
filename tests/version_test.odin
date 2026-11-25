@@ -340,7 +340,9 @@ update_moves_one_package :: proc(t: ^testing.T) {
 	expect_release(&fixture, "beta", "v0.4.1")
 	expect_contains(&fixture, packages_text(&fixture), "\"tag\": \"v0.4.1\"")
 
-	expect_failure(&fixture, run(&fixture, "", "update", "beta@v7.0.0", "-u", "--yes"), "no usable repository")
+	result = run(&fixture, "", "update", "beta@v7.0.0", "-u", "--yes")
+	expect_failure(&fixture, result, "could not check 1 package(s)")
+	expect_contains(&fixture, result.out, "has no tag v7.0.0")
 	expect_failure(&fixture, run(&fixture, "", "update", "beta@latest", "-u", "--yes"), "not a vMAJOR.MINOR.PATCH tag")
 }
 
