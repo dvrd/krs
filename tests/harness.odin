@@ -217,6 +217,18 @@ expect_release :: proc(fixture: ^Fixture, name, tag: string, loc := #caller_loca
 	expect_contains(fixture, read_file(path), fmt.aprintf("RELEASE :: \"%s\"", tag), loc)
 }
 
+// Collapses runs of spaces, so listings can be matched without padding.
+squeeze :: proc(text: string) -> string {
+	builder := strings.builder_make()
+	for index in 0 ..< len(text) {
+		if text[index] == ' ' && index > 0 && text[index - 1] == ' ' {
+			continue
+		}
+		strings.write_byte(&builder, text[index])
+	}
+	return strings.to_string(builder)
+}
+
 packages_text :: proc(fixture: ^Fixture) -> string {
 	return read_file(krs.path_join(fixture.project, krs.PACKAGES_PATH))
 }

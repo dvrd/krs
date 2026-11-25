@@ -1,5 +1,9 @@
 package krs
 
+import "core:slice"
+import "core:strings"
+import "core:text/regex"
+
 // The tag `krs update` picks for each package. `Latest` and `Greatest` are
 // both the highest tag: KRS has no registry dist-tags, only vMAJOR.MINOR.PATCH.
 Update_Target :: enum {
@@ -135,4 +139,436 @@ log_level_parse :: proc(text: string) -> (level: Log_Level, ok: bool) {
 		}
 	}
 	return .Info, false
+}
+
+// How far a candidate moves from the current tag.
+Update_Group :: enum {
+	Patch,
+	Minor,
+	Major,
+	Major_Zero, // the minor changes at 0.x, which is a breaking change there
+}
+
+Update_Candidate :: struct {
+	name, source, current, chosen, installed: string,
+	group:       Update_Group,
+	pinned:      bool,
+	chosen_time: i64, // Unix seconds; 0 when not loaded
+}
+
+Update_Query :: struct {
+	names:          []string, // positional names, "" target when no @tag
+	name_tags:      map[string]string, // name -> tag from `name@tag`
+	target:         Update_Target,
+	filter, reject, filter_version, reject_version: []Update_Pattern,
+	global:         bool,
+	cooldown:       i64, // seconds; 0 = off (plan 027 sets it)
+	need_times:     bool, // .Newest, --format time, or cooldown
+}
+
+Update_Pattern :: struct {
+	kind:       enum {
+		Exact,
+		Glob,
+		Regex,
+	},
+	text:       string,
+	expression: regex.Regular_Expression,
+}
+
+// Splits raw pattern values on commas and spaces, never inside `/…/`.
+update_pattern_texts :: proc(raw: []string) -> (texts: [dynamic]string) {
+	for value in raw {
+		start := 0
+		for start < len(value) {
+			if value[start] == ',' || value[start] == ' ' {
+				start += 1
+				continue
+			}
+
+			end := start
+			slash := start + 1 if value[start] == '!' else start
+			if slash < len(value) && value[slash] == '/' {
+				end = slash + 1
+				for end < len(value) && (value[end] != '/' || value[end - 1] == '\\') {
+					end += 1
+				}
+				end = min(end + 1, len(value))
+			}
+
+			for end < len(value) && value[end] != ',' && value[end] != ' ' {
+				end += 1
+			}
+
+			assert(end > start)
+			append(&texts, value[start:end])
+			start = end
+		}
+	}
+	return
+}
+
+// Compiles name or version patterns: `/regex/`, `glob*`, or an exact text.
+update_patterns :: proc(env: ^Env, raw: []string) -> (patterns: [dynamic]Update_Pattern, ok: bool) {
+	for text in update_pattern_texts(raw) {
+		pattern := Update_Pattern{text = text}
+		switch {
+		case strings.has_prefix(text, "/"):
+			if len(text) < 2 || !strings.has_suffix(text, "/") {
+				return patterns, fail(env, "%s is not a valid pattern", text)
+			}
+
+			expression, err := regex.create(text[1:len(text) - 1])
+			if err != nil {
+				return patterns, fail(env, "%s is not a valid pattern", text)
+			}
+			pattern.kind = .Regex
+			pattern.expression = expression
+		case strings.contains_rune(text, '*'):
+			pattern.kind = .Glob
+		case:
+			pattern.kind = .Exact
+		}
+		append(&patterns, pattern)
+	}
+	return patterns, true
+}
+
+update_patterns_destroy :: proc(patterns: []Update_Pattern) {
+	for pattern in patterns {
+		if pattern.kind == .Regex {
+			regex.destroy(pattern.expression)
+		}
+	}
+}
+
+// `*` matches any run of characters; every other character matches itself.
+glob_match :: proc(glob, text: string) -> bool {
+	g, t := 0, 0
+	star, resume := -1, 0
+	for t < len(text) {
+		if g < len(glob) && glob[g] == '*' {
+			star = g
+			resume = t
+			g += 1
+		} else if g < len(glob) && glob[g] == text[t] {
+			g += 1
+			t += 1
+		} else if star >= 0 {
+			resume += 1
+			t = resume
+			g = star + 1
+		} else {
+			return false
+		}
+	}
+
+	for g < len(glob) && glob[g] == '*' {
+		g += 1
+	}
+	return g == len(glob)
+}
+
+update_pattern_match :: proc(pattern: Update_Pattern, text: string) -> bool {
+	switch pattern.kind {
+	case .Exact:
+		return pattern.text == text
+	case .Glob:
+		return glob_match(pattern.text, text)
+	case .Regex:
+		capture, matched := regex.match(pattern.expression, text)
+		regex.destroy(capture)
+		return matched
+	}
+	unreachable()
+}
+
+update_patterns_match :: proc(patterns: []Update_Pattern, text: string) -> bool {
+	for pattern in patterns {
+		if update_pattern_match(pattern, text) {
+			return true
+		}
+	}
+	return false
+}
+
+// Positional names and name patterns, applied before any repository lookup.
+update_name_selected :: proc(query: Update_Query, name: string) -> bool {
+	if len(query.names) > 0 && !slice.contains(query.names, name) {
+		return false
+	}
+
+	if len(query.filter) > 0 && !update_patterns_match(query.filter, name) {
+		return false
+	}
+
+	return !update_patterns_match(query.reject, name)
+}
+
+update_version_selected :: proc(query: Update_Query, tag: string) -> bool {
+	if len(query.filter_version) > 0 && !update_patterns_match(query.filter_version, tag) {
+		return false
+	}
+
+	return !update_patterns_match(query.reject_version, tag)
+}
+
+update_group :: proc(current, chosen: Version) -> Update_Group {
+	if current.major != chosen.major {
+		return .Major
+	}
+
+	if current.major == 0 && current.minor != chosen.minor {
+		return .Major_Zero
+	}
+
+	if current.minor != chosen.minor {
+		return .Minor
+	}
+
+	return .Patch
+}
+
+// The tag the target picks among the repository's tags, or "" when none
+// qualifies. `.Newest` needs the tag times loaded.
+update_choose :: proc(repository: ^Repository, current: Version, target: Update_Target) -> string {
+	chosen := ""
+	chosen_version: Version
+	chosen_time: i64
+	for tag in repository.tags {
+		version := parse_tag(tag) or_continue
+		switch target {
+		case .Latest, .Greatest, .Newest:
+		case .Minor:
+			if version.major != current.major {
+				continue
+			}
+		case .Patch:
+			if version.major != current.major || version.minor != current.minor {
+				continue
+			}
+		case .Semver:
+			if version_compatibility(current, version) != .Compatible {
+				continue
+			}
+		}
+
+		better := chosen == "" || version_compare(version, chosen_version) == .Higher
+		time: i64
+		if target == .Newest {
+			found: bool
+			time, found = repository.tag_times[tag]
+			if !found {
+				continue
+			}
+			better = chosen == "" || time > chosen_time || (time == chosen_time && version_compare(version, chosen_version) == .Higher)
+		}
+
+		if better {
+			chosen = tag
+			chosen_version = version
+			chosen_time = time
+		}
+	}
+	return chosen
+}
+
+// The upgrades a query finds, sorted by name. Reads repositories; writes
+// nothing. Fails when any selected package cannot be checked.
+update_candidates :: proc(state: ^State, query: Update_Query) -> (candidates: [dynamic]Update_Candidate, ok: bool) {
+	Entry :: struct {
+		name, source, tag: string,
+		pinned:            bool,
+	}
+
+	entries := make([dynamic]Entry, context.temp_allocator)
+	if query.global {
+		for record in state.manifest.packages {
+			append(&entries, Entry{record.name, record.source, record.tag, false})
+		}
+	} else {
+		// The project's own pin is the current version, not the root's tag.
+		for record in state.packages.packages {
+			append(&entries, Entry{record.name, record.source, record.tag, record.pinned})
+		}
+	}
+
+	unavailable := 0
+	for entry in entries {
+		installed := ""
+		if record := manifest_find(&state.manifest, entry.name); record != nil {
+			if record.linked != "" {
+				continue
+			}
+			installed = record.tag
+		}
+
+		if !update_name_selected(query, entry.name) || !update_version_selected(query, entry.tag) {
+			continue
+		}
+
+		if state.options.fetch {
+			refresh_package_cache(state, entry.name, entry.source)
+		}
+
+		repository, found := repository_find(state, entry.name, "", entry.source)
+		if !found {
+			warn(state.env, "cannot check %s: no usable repository", entry.name)
+			unavailable += 1
+			continue
+		}
+
+		current, current_ok := parse_tag(entry.tag)
+		if !current_ok {
+			warn(state.env, "cannot check %s: invalid installed tag %s", entry.name, entry.tag)
+			unavailable += 1
+			continue
+		}
+
+		if query.need_times || query.target == .Newest {
+			if !repository_load_times(state, &repository) {
+				unavailable += 1
+				continue
+			}
+		}
+
+		chosen := ""
+		named := query.name_tags[entry.name]
+		if named != "" {
+			// Only an explicit tag may choose a lower one.
+			if !repository_has_tag(&repository, named) {
+				warn(state.env, "%s has no tag %s", entry.name, named)
+				unavailable += 1
+				continue
+			}
+
+			if named == entry.tag {
+				continue
+			}
+			chosen = named
+		} else {
+			chosen = update_choose(&repository, current, query.target)
+			if chosen == "" {
+				continue
+			}
+
+			chosen_version, _ := parse_tag(chosen)
+			if version_compare(chosen_version, current) != .Higher {
+				continue
+			}
+		}
+
+		chosen_version, chosen_ok := parse_tag(chosen)
+		assert(chosen_ok)
+		assert(chosen != entry.tag)
+		candidate := Update_Candidate {
+			name      = entry.name,
+			source    = entry.source,
+			current   = entry.tag,
+			chosen    = chosen,
+			installed = installed,
+			group     = update_group(current, chosen_version),
+			pinned    = entry.pinned,
+		}
+		if query.need_times {
+			candidate.chosen_time = repository.tag_times[chosen]
+		}
+		append(&candidates, candidate)
+	}
+
+	if unavailable > 0 {
+		return candidates, fail(state.env, "could not check %d package(s) for updates", unavailable)
+	}
+
+	slice.sort_by(candidates[:], proc(a, b: Update_Candidate) -> bool {
+		return a.name < b.name
+	})
+	return candidates, true
+}
+
+UPDATE_GROUP_HEADERS :: [Update_Group]string {
+	.Patch      = "Patch",
+	.Minor      = "Minor",
+	.Major      = "Major",
+	.Major_Zero = "Major version zero",
+}
+
+UPDATE_GROUP_COLORS :: [Update_Group]string {
+	.Patch      = ANSI_GREEN,
+	.Minor      = ANSI_CYAN,
+	.Major      = ANSI_RED,
+	.Major_Zero = ANSI_RED,
+}
+
+// Headers are printed in this order, then the pinned packages.
+UPDATE_GROUP_ORDER :: [?]Update_Group{.Patch, .Minor, .Major_Zero, .Major}
+
+// Prints the candidates of `krs update`, grouped by the kind of change.
+update_print :: proc(env: ^Env, candidates: []Update_Candidate, options: Update_Options) {
+	headers, colors, targets := UPDATE_GROUP_HEADERS, UPDATE_GROUP_COLORS, UPDATE_TARGET_NAMES
+	name_width, current_width := 0, 0
+	upgrades := 0
+	for candidate in candidates {
+		name_width = max(name_width, len(candidate.name))
+		current_width = max(current_width, len(candidate.current))
+		if !candidate.pinned {
+			upgrades += 1
+		}
+	}
+
+	for group in UPDATE_GROUP_ORDER {
+		header := false
+		for candidate in candidates {
+			if candidate.pinned || candidate.group != group {
+				continue
+			}
+
+			if !header {
+				say(env, "%v", paint(env, colors[group], headers[group]))
+				header = true
+			}
+			update_print_row(env, candidate, name_width, current_width)
+		}
+	}
+
+	header := false
+	for candidate in candidates {
+		if !candidate.pinned {
+			continue
+		}
+
+		if !header {
+			say(env, "%v", paint(env, ANSI_DIM, "Pinned"))
+			header = true
+		}
+		update_print_row(env, candidate, name_width, current_width)
+	}
+
+	if upgrades > 0 {
+		info(env, "run %s to upgrade %s", "krs update -u", PACKAGES_PATH)
+	}
+
+	if len(candidates) == 0 {
+		if options.target == .Latest || options.target == .Greatest {
+			success(env, "every package of this project is at its highest tag")
+		} else {
+			success(env, "no upgrades for --target %s", targets[options.target])
+		}
+	}
+}
+
+// `  name current -> chosen`, padded to the widest name and tag.
+update_print_row :: proc(env: ^Env, candidate: Update_Candidate, name_width, current_width: int) {
+	name_padding := strings.repeat(" ", name_width - len(candidate.name), context.temp_allocator)
+	current_padding := strings.repeat(" ", current_width - len(candidate.current), context.temp_allocator)
+	if candidate.pinned {
+		available := paint(env, ANSI_DIM, strings.concatenate({"(pinned; ", candidate.chosen, " available)"}, context.temp_allocator))
+		say(env, "  %s%v %v%v %v", candidate.name, name_padding, candidate.current, current_padding, available)
+		return
+	}
+
+	colors := UPDATE_GROUP_COLORS
+	color := colors[candidate.group]
+	say(env, "  %s%v %v%v %v %v", candidate.name, name_padding, candidate.current, current_padding,
+		paint(env, ANSI_DIM, "->"), paint(env, color, candidate.chosen))
 }

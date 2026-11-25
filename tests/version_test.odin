@@ -317,8 +317,9 @@ update_moves_one_package :: proc(t: ^testing.T) {
 	// With no argument it only lists.
 	listing := run(&fixture, "", "update")
 	expect_ok(&fixture, listing)
-	expect_contains(&fixture, listing.out, "beta v0.4.0 -> v0.5.0 (breaking)")
-	expect_contains(&fixture, listing.out, "gamma v0.1.0 -> v0.1.1 (compatible)")
+	expect_contains(&fixture, squeeze(listing.out), "beta v0.4.0 -> v0.5.0")
+	expect_contains(&fixture, squeeze(listing.out), "gamma v0.1.0 -> v0.1.1")
+	expect_contains(&fixture, listing.out, "Major version zero")
 	testing.expect(t, !strings.contains(listing.out, "alpha"))
 	expect_release(&fixture, "beta", "v0.4.0")
 
@@ -940,7 +941,8 @@ update_fetch_sees_new_github_releases :: proc(t: ^testing.T) {
 
 	fetched := run(&fixture, "", "update", "--fetch")
 	expect_ok(&fixture, fetched)
-	expect_contains(&fixture, fetched.out, "kessel v1.0.0 -> v1.1.0 (compatible)")
+	expect_contains(&fixture, squeeze(fetched.out), "kessel v1.0.0 -> v1.1.0")
+	expect_contains(&fixture, fetched.out, "Minor")
 }
 
 @(test)

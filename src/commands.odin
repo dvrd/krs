@@ -368,59 +368,72 @@ command_pin :: proc(env: ^Env, options: Options, name: string, pinned: bool) -> 
 	return true
 }
 
-// `krs update` without -u: lists newer tags and changes nothing.
+// `krs update` without -u: lists newer tags and changes nothing. Positional
+// names (each optionally `name@tag`) choose which packages are checked.
 command_check :: proc(env: ^Env, options: Options, names: []string) -> bool {
 	if options.frozen {
 		return fail(env, "--frozen does not apply to update")
 	}
 
+	query := Update_Query {
+		target     = options.update.target,
+		global     = options.update.global,
+		need_times = options.update.target == .Newest || .Time in options.update.format,
+	}
+	plain_names := make([dynamic]string, context.temp_allocator)
+	for word in names {
+		name, tag := word, ""
+		if at := strings.index_byte(word, '@'); at >= 0 {
+			name, tag = word[:at], word[at + 1:]
+			if _, valid := parse_tag(tag); !valid {
+				return fail(env, "%s is not a vMAJOR.MINOR.PATCH tag", tag)
+			}
+		}
+		append(&plain_names, name)
+		query.name_tags[name] = tag
+	}
+	query.names = plain_names[:]
+
+	// A filter starting with `!` is a reject pattern.
+	filters := make([dynamic]string, context.temp_allocator)
+	rejects := make([dynamic]string, context.temp_allocator)
+	filter_versions := make([dynamic]string, context.temp_allocator)
+	reject_versions := make([dynamic]string, context.temp_allocator)
+	append(&rejects, ..options.update.reject[:])
+	append(&reject_versions, ..options.update.reject_version[:])
+	for text in update_pattern_texts(options.update.filter[:]) {
+		if strings.has_prefix(text, "!") {
+			append(&rejects, text[1:])
+		} else {
+			append(&filters, text)
+		}
+	}
+
+	for text in update_pattern_texts(options.update.filter_version[:]) {
+		if strings.has_prefix(text, "!") {
+			append(&reject_versions, text[1:])
+		} else {
+			append(&filter_versions, text)
+		}
+	}
+
+	filter := update_patterns(env, filters[:]) or_return
+	defer update_patterns_destroy(filter[:])
+	reject := update_patterns(env, rejects[:]) or_return
+	defer update_patterns_destroy(reject[:])
+	filter_version := update_patterns(env, filter_versions[:]) or_return
+	defer update_patterns_destroy(filter_version[:])
+	reject_version := update_patterns(env, reject_versions[:]) or_return
+	defer update_patterns_destroy(reject_version[:])
+	query.filter = filter[:]
+	query.reject = reject[:]
+	query.filter_version = filter_version[:]
+	query.reject_version = reject_version[:]
+
 	state := state_open(env, options) or_return
 	defer state_close(state)
-	found := 0
-	unavailable := 0
-
-	for record in state.manifest.packages {
-		if record.linked != "" || packages_find(&state.packages, record.name) == nil {
-			continue
-		}
-
-		if options.fetch {
-			refresh_package_cache(state, record.name, record.source)
-		}
-
-		repository, ok := repository_find(state, record.name, "", record.source)
-		if !ok {
-			warn(env, "cannot check %s: no usable repository", record.name)
-			unavailable += 1
-			continue
-		}
-
-		highest, _ := highest_tag(repository.tags[:])
-		current_version, current_ok := parse_tag(record.tag)
-		highest_version, _ := parse_tag(highest)
-		if !current_ok {
-			warn(env, "cannot check %s: invalid installed tag %s", record.name, record.tag)
-			unavailable += 1
-			continue
-		}
-
-		if version_compare(highest_version, current_version) != .Higher {
-			continue
-		}
-
-		compatibility := version_compatibility(current_version, highest_version)
-		say_version_change(env, record.name, record.tag, highest, compatibility)
-		found += 1
-	}
-
-	if unavailable > 0 {
-		return fail(env, "could not check %d package(s) for updates", unavailable)
-	}
-
-	if found == 0 {
-		success(env, "every package of this project is at its highest tag")
-	}
-
+	candidates := update_candidates(state, query) or_return
+	update_print(env, candidates[:], options.update)
 	return true
 }
 
