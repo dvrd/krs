@@ -30,6 +30,8 @@ USAGE_FORMAT :: `%[0]susage:%[1]s
       hold a package at the release this project records
   krs %[0]sunpin%[1]s <package> [--root=<path>]
       let a pinned package be upgraded again
+  krs %[0]svendor%[1]s [--root=<path>] [--yes]
+      copy this project's dependencies into vendor/ and use them
   krs %[0]sunlink%[1]s <package> [--root=<path>] [--restore] [--yes]
       remove a link; with --restore, install the recorded release
   krs %[0]srecover%[1]s
@@ -197,6 +199,8 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 		ok = command_pin(env, options, words[1], true)
 	case words[0] == "unpin" && len(words) == 2:
 		ok = command_pin(env, options, words[1], false)
+	case words[0] == "vendor" && len(words) == 1:
+		ok = command_vendor(env, options)
 	case words[0] == "recover" && len(words) == 1:
 		if options.yes {
 			fail(env, "--yes only applies to recover abandon")
@@ -421,7 +425,7 @@ update_report_dependants :: proc(state: ^State, name, tag: string) {
 			continue
 		}
 
-		release, ok := git_release_open(record.path, record.tag, record.commit)
+		release, ok := git_release_open(manifest_repository(state, record), record.tag, record.commit)
 		if !ok {
 			continue
 		}
@@ -556,6 +560,10 @@ command_link :: proc(env: ^Env, options: Options, name: string) -> bool {
 
 	state := state_open(env, options) or_return
 	defer state_close(state)
+	if state.vendored {
+		return fail(env, "%s uses vendor/; links are not available in vendor mode", state.scope.project)
+	}
+
 	repository, found := link_find(state, name)
 	if !found {
 		return fail(env, "no repository with a src/ for \"%s\" in the source directories", name)
@@ -738,6 +746,9 @@ command_status :: proc(env: ^Env, options: Options) -> bool {
 
 	state := state_open(env, options) or_return
 	defer state_close(state)
+	if state.vendored {
+		info(env, "vendor mode: packages come from %s (build with %s)", state.shared, "-collection:shared=vendor")
+	}
 
 	imports, scanned := scan_directory_imports(env.project, path_base(env.project))
 	if !scanned {
@@ -924,6 +935,10 @@ command_unlink :: proc(env: ^Env, options: Options, name: string) -> bool {
 
 	state := state_open(env, options) or_return
 	defer state_close(state)
+	if state.vendored {
+		return fail(env, "%s uses vendor/; links are not available in vendor mode", state.scope.project)
+	}
+
 	record := manifest_find(&state.manifest, name)
 	if record == nil || record.linked == "" {
 		return fail(env, "%s is not linked in %s", name, state.shared)

@@ -407,8 +407,14 @@ installed_differences :: proc(
 scan_directory_imports :: proc(directory, own_name: string) -> (imports: [dynamic]string, ok: bool) {
 	files: [dynamic]string
 	list_files(directory, "", .Project, &files) or_return
+	// A krs vendor/ holds this project's dependencies, not its own code.
+	skip_vendor := os.exists(path_join(path_join(directory, VENDOR_DIR), MANIFEST_PATH))
 
 	for file in files {
+		if skip_vendor && strings.has_prefix(file, VENDOR_DIR + "/") {
+			continue
+		}
+
 		if path_extension(file) != ".odin" {
 			continue
 		}

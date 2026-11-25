@@ -58,6 +58,8 @@ Set `KRS_NO_ANIMATION=1` to keep terminal colors with static output. Set
 
 - `krs install` resolves the project's `shared:` imports. With the example config, `import "shared:kessel"` can fetch `dvrd/kessel` automatically when a matching local or cached release is missing. Use `--frozen` to require the versions already recorded in `.krs/packages.json`.
 - `krs status` lists what the Odin root holds for this project and exits 1 when a package is altered, missing, broken or pinned differently.
+- `krs pin surf` holds surf at the release `.krs/packages.json` records; `krs unpin surf` lets it move again. A dependency cannot move a pinned package.
+- `krs vendor` copies every dependency, at this project's versions, into `vendor/` and makes every later krs command for this project use it. Commit `vendor/` (if the project's `.gitignore` ignores `vendor/`, change it) and build with `odin build . -collection:shared=vendor`. Links are not available in vendor mode; delete `vendor/` to go back to the Odin root's `shared/`.
 - `krs install --repair` reinstalls packages whose installed files were changed, at their recorded release. It cannot be combined with `--frozen`.
 - `krs update` lists newer tags from the source directories and the GitHub cache. Run `krs fetch` first, or pass `--fetch`, to refresh the cache. Use `krs update surf` to install the latest or `krs update surf@v1.2.3` to select a release. Use `krs update --all` to move every package to its highest compatible tag.
 - `krs fetch` with no argument refreshes the GitHub releases of the libraries in `libs`. `krs fetch dvrd/kessel` selects or refreshes one repository over HTTPS. Then run `krs install` or `krs update kessel`. `fetch` takes no `--root`, `--frozen` or `--yes`.

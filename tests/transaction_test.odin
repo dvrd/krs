@@ -491,3 +491,74 @@ cleanup_failure_after_publish_still_succeeds :: proc(t: ^testing.T) {
 	expect_ok(&fixture, run(&fixture, "", "update"))
 	testing.expect(t, !os.exists(directory))
 }
+
+@(test)
+journal_accepts_vendor_paths_only :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	scope := krs.Journal_Scope{project = "/p", root = "/r"}
+
+	change :: proc(target: string) -> krs.Journal_Change {
+		directory := krs.path_join(krs.path_directory(target), ".krs-stage-abc")
+		return {target = target, directory = directory, staging = {device = 1, inode = 1}}
+	}
+
+	for target in ([]string{"/p/vendor/beta", "/p/vendor/.krs/manifest.json", "/r/shared/beta"}) {
+		testing.expectf(t, krs.journal_change_valid(scope, change(target)), "%s should be valid", target)
+	}
+
+	for target in ([]string{"/p/vendor/beta/inner", "/p/other/beta", "/p/vendor", "/q/vendor/beta"}) {
+		testing.expectf(t, !krs.journal_change_valid(scope, change(target)), "%s should be invalid", target)
+	}
+}
+
+@(test)
+journal_recovers_a_vendor_publication :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+	project, _ := os.get_absolute_path(fixture.project, context.allocator)
+	root, _ := os.get_absolute_path(fixture.root, context.allocator)
+	vendor := krs.path_join(project, krs.VENDOR_DIR)
+	pkg_file := krs.path_join(vendor, "alpha/alpha.odin")
+	manifest := krs.path_join(vendor, krs.MANIFEST_PATH)
+	before :: `{"format": 1, "packages": []}`
+	write_file(t, pkg_file, "package old")
+	write_file(t, manifest, before)
+
+	output := strings.builder_make()
+	env := krs.Env{home = fixture.home, err = strings.to_writer(&output)}
+	transaction := krs.Transaction{env = &env, scope = {project, root}}
+	defer krs.transaction_close(&transaction)
+	staged, staged_ok := krs.transaction_stage(&transaction, krs.path_join(vendor, "alpha"), .Package)
+	if !testing.expect(t, staged_ok) {
+		return
+	}
+	write_file(t, krs.path_join(staged.staged, "alpha.odin"), "package new")
+	record, record_ok := krs.transaction_stage(&transaction, manifest, .Record)
+	if !testing.expect(t, record_ok) {
+		return
+	}
+	write_file(t, record.staged, `{"format": 1, "packages": [], "test": "after"}`)
+
+	database, opened := krs.journal_open(&env, true, "transactions.db")
+	if !testing.expect(t, opened) {
+		return
+	}
+	changes, _, prepared := krs.transaction_prepare(&transaction, database)
+	if !testing.expectf(t, prepared, "transaction_prepare rejected vendor paths: %s", strings.to_string(output)) {
+		db.close(database)
+		return
+	}
+
+	// Interrupt the publication after its first rename.
+	testing.expect_value(t, os.rename(changes[0].target, krs.path_join(changes[0].directory, "old")), nil)
+	db.close(database)
+
+	result := run(&fixture, "", "status")
+	expect_ok(&fixture, result)
+	testing.expect_value(t, read_file(pkg_file), "package old")
+	testing.expect_value(t, read_file(manifest), before)
+	for change in changes {
+		testing.expect(t, !os.exists(change.directory))
+	}
+}

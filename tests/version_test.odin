@@ -1347,3 +1347,135 @@ update_all_skips_a_pinned_package :: proc(t: ^testing.T) {
 	expect_release(&fixture, "beta", "v0.4.0")
 	expect_contains(&fixture, result.out, "is pinned at v0.4.0; skipped")
 }
+
+// alpha v1.0.0 imports beta v0.1.0; the project imports alpha and has
+// installed both into the Odin root.
+vendor_fixture_install :: proc(fixture: ^Fixture) {
+	library_release(fixture, "beta", "v0.1.0")
+	library_release(fixture, "alpha", "v1.0.0", "beta")
+	project_imports(fixture, "alpha")
+	expect_ok(fixture, run(fixture, "", "install", "--yes"))
+}
+
+vendor_text :: proc(fixture: ^Fixture) -> string {
+	return read_file(krs.path_join(fixture.project, fmt.aprintf("%s/%s", krs.VENDOR_DIR, krs.MANIFEST_PATH)))
+}
+
+@(test)
+vendor_copies_every_dependency :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	vendor_fixture_install(&fixture)
+	root_manifest := manifest_text(&fixture)
+
+	result := run(&fixture, "", "vendor", "--yes")
+	expect_ok(&fixture, result)
+	expect_contains(&fixture, result.out, "-collection:shared=vendor")
+	testing.expect(t, os.exists(krs.path_join(fixture.project, "vendor/alpha/alpha.odin")))
+	testing.expect(t, os.exists(krs.path_join(fixture.project, "vendor/beta/beta.odin")))
+	testing.expect(t, os.exists(krs.path_join(fixture.project, "vendor/.krs/manifest.json")))
+	expect_contains(&fixture, read_file(krs.path_join(fixture.project, "vendor/beta/beta.odin")), "RELEASE :: \"v0.1.0\"")
+	expect_contains(&fixture, vendor_text(&fixture), "\"path\": \"\"")
+	testing.expect(t, !strings.contains(vendor_text(&fixture), fixture.sources))
+	testing.expect_value(t, manifest_text(&fixture), root_manifest)
+
+	again := run(&fixture, "", "vendor", "--yes")
+	expect_ok(&fixture, again)
+	expect_contains(&fixture, again.out, "this project already uses")
+}
+
+@(test)
+update_in_vendor_mode_reports_dependants :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	library_release(&fixture, "beta", "v0.4.0")
+	library_recording(&fixture, "alpha", "v1.0.0", "beta", "v0.4.0")
+	library_release(&fixture, "beta", "v0.4.2")
+	project_imports(&fixture, "alpha")
+	expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
+	expect_ok(&fixture, run(&fixture, "", "vendor", "--yes"))
+
+	result := run(&fixture, "", "update", "beta@v0.4.2", "--yes")
+	expect_contains(&fixture, result.out, "alpha v1.0.0 recorded beta v0.4.0")
+}
+
+@(test)
+vendor_files_are_not_project_imports :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	vendor_fixture_install(&fixture)
+	expect_ok(&fixture, run(&fixture, "", "vendor", "--yes"))
+
+	project_imports(&fixture)
+	expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
+	testing.expect(t, !strings.contains(packages_text(&fixture), "\"beta\""))
+}
+
+@(test)
+vendor_refuses_an_existing_directory :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	vendor_fixture_install(&fixture)
+	root_manifest := manifest_text(&fixture)
+	write_file(t, krs.path_join(fixture.project, "vendor/bindings/lib.h"), "int f(void);\n")
+
+	expect_failure(&fixture, run(&fixture, "", "vendor", "--yes"), "already exists")
+	testing.expect_value(t, manifest_text(&fixture), root_manifest)
+	testing.expect(t, !os.exists(krs.path_join(fixture.project, "vendor/.krs/manifest.json")))
+}
+
+@(test)
+install_in_vendor_mode_writes_vendor :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	vendor_fixture_install(&fixture)
+	expect_ok(&fixture, run(&fixture, "", "vendor", "--yes"))
+
+	library_release(&fixture, "gamma", "v0.1.0")
+	project_imports(&fixture, "alpha", "gamma")
+	expect_ok(&fixture, run(&fixture, "", "install", "--yes"))
+	testing.expect(t, os.exists(krs.path_join(fixture.project, "vendor/gamma/gamma.odin")))
+	testing.expect(t, !krs.path_present(krs.path_join(fixture.shared, "gamma")))
+	expect_contains(&fixture, packages_text(&fixture), "\"name\": \"gamma\"")
+	expect_contains(&fixture, vendor_text(&fixture), "\"name\": \"gamma\"")
+}
+
+@(test)
+links_are_refused_in_vendor_mode :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	vendor_fixture_install(&fixture)
+	expect_ok(&fixture, run(&fixture, "", "vendor", "--yes"))
+
+	write_file(t, krs.path_join(fixture.sources, "fresh/src/fresh.odin"), "package fresh\n")
+	expect_failure(&fixture, run(&fixture, "", "link", "fresh"), "vendor mode")
+	expect_failure(&fixture, run(&fixture, "", "unlink", "alpha"), "vendor mode")
+	testing.expect(t, !krs.path_present(krs.path_join(fixture.shared, "fresh")))
+}
+
+@(test)
+status_reports_vendor_mode :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixture_make(t)
+	defer fixture_destroy(&fixture)
+
+	vendor_fixture_install(&fixture)
+	expect_ok(&fixture, run(&fixture, "", "vendor", "--yes"))
+
+	result := run(&fixture, "", "status")
+	expect_ok(&fixture, result)
+	expect_contains(&fixture, result.out, "vendor mode")
+	expect_contains(&fixture, result.out, "installed v1.0.0")
+}

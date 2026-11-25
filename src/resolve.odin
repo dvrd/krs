@@ -107,7 +107,7 @@ decision_create :: proc(state: ^State, name: string) -> ^Decision {
 	decision.tag = record.tag
 	decision.commit = record.commit
 	decision.source = record.source
-	decision.repository = record.path
+	decision.repository = manifest_repository(state, record^)
 	decision.hash = record.hash
 	decision.installed_tag = record.tag
 

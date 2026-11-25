@@ -12,6 +12,7 @@ KRS_DATA_PATH :: ".local/shared/krs"
 
 PACKAGES_PATH :: ".krs/packages.json"
 MANIFEST_PATH :: ".krs/manifest.json"
+VENDOR_DIR :: "vendor"
 CONFIG_PATH :: ".config/krs/config.json"
 
 // One dependency of a project, as written to `.krs/packages.json`. No path of

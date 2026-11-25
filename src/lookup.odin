@@ -116,6 +116,17 @@ repository_candidate :: proc(state: ^State, path, tag, origin: string, cached :=
 	return repository, true
 }
 
+// The repository of an installed record. Records in a committed vendor/
+// carry no machine path, so look the repository up again.
+manifest_repository :: proc(state: ^State, record: Manifest_Record) -> string {
+	if record.path != "" {
+		return record.path
+	}
+
+	repository, found := repository_find(state, record.name, record.tag, record.source)
+	return repository.path if found else ""
+}
+
 // Check configured source directories before cached GitHub repositories.
 repository_find :: proc(state: ^State, name, tag, source: string) -> (repository: Repository, ok: bool) {
 	origin := source_identity(source)

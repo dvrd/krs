@@ -129,7 +129,7 @@ decision_stage :: proc(state: ^State, transaction: ^Transaction, decision: ^Deci
 			tag = decision.tag,
 			commit = decision.commit,
 			hash = decision.hash,
-			path = decision.repository,
+			path = "" if state.vendored else decision.repository,
 		},
 	)
 

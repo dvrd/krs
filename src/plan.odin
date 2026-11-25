@@ -26,6 +26,7 @@ State :: struct {
 	env:       ^Env,
 	options:   Options,
 	shared:    string,
+	vendored:  bool, // shared is <project>/vendor
 	config:    Config,
 	packages:  Packages_File,
 	manifest:  Manifest_File,
@@ -91,9 +92,27 @@ state_open :: proc(env: ^Env, options: Options) -> (state: ^State, ok: bool) {
 	journal_recover(env, state.scope) or_return
 	state.config = load_config(env) or_return
 	state.packages = load_packages(env) or_return
+
+	// A project with its own collection reads and writes vendor/, not the root.
+	vendor := path_join(state.scope.project, VENDOR_DIR)
+	if os.exists(path_join(vendor, MANIFEST_PATH)) {
+		state.shared = vendor
+		state.vendored = true
+	}
+
 	state.manifest = load_manifest(env, state.shared) or_return
 
 	return state, true
+}
+
+// Forgets everything a previous plan decided, so another plan can run on
+// the same state (for example after switching to vendor/).
+plan_reset :: proc(state: ^State) {
+	clear(&state.queue)
+	clear(&state.decisions)
+	clear(&state.order)
+	clear(&state.altered)
+	clear(&state.installed_hashes)
 }
 
 // Prints a message once per command, however often it comes up.
