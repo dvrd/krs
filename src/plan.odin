@@ -76,6 +76,24 @@ Repository :: struct {
 	tags:   [dynamic]string,
 }
 
+Repository_Lookup :: struct {
+	repository: Repository,
+	reason:     string, // why the path is not usable, or ""
+}
+
+// What one release of one package installs and pins.
+Release_Facts :: struct {
+	commit:    string, // the commit the facts were read from
+	selection: Selection,
+	pins:      Packages_File,
+	problem:   string, // why the release's own PACKAGES_PATH is unusable, or ""
+}
+
+Installed_Hash :: struct {
+	hash: string,
+	ok:   bool,
+}
+
 // How often a command touched Git or the disk; tests assert the caches work.
 Resolution_Counts :: struct {
 	repository_opens: int,
@@ -102,6 +120,12 @@ State :: struct {
 	fetch_configured: bool,
 	version_answers:  map[Version_Conflict]string,
 	version_question: Version_Conflict,
+	// Per-command caches, kept across resolution passes; never persisted.
+	repositories:     map[string]Repository_Lookup, // key: path + (cached ? "\x00cached" : "")
+	tag_commits:      map[[2]string]string, // {path, tag} -> commit
+	selections:       map[[3]string]Release_Facts, // {path, commit, package name} -> selection and pins
+	installed_hashes: map[string]Installed_Hash, // package name -> hash of shared/<name>
+	fetched:          map[string]bool, // GitHub origins fetched in this command
 	counts:           Resolution_Counts,
 	git_initialized:  bool, // libgit2 stays initialized until state_close
 }
@@ -166,8 +190,25 @@ report_once :: proc(state: ^State, format: string, arguments: ..any) {
 	say(state.env, "%v", message)
 }
 
+repository_cache_key :: proc(path: string, cached: bool) -> string {
+	return strings.concatenate({path, "\x00cached" if cached else ""})
+}
+
+// Opens a repository once per command; a fetch forgets the lookup.
 repository_open :: proc(state: ^State, path: string, cached := false) -> (repository: Repository, reason: string) {
+	key := repository_cache_key(path, cached)
+	if lookup, hit := state.repositories[key]; hit {
+		assert(lookup.reason != "" || lookup.repository.path == path)
+		return lookup.repository, lookup.reason
+	}
+
+	repository, reason = repository_read(path, cached)
+	state.repositories[key] = {repository, reason}
 	state.counts.repository_opens += 1
+	return
+}
+
+repository_read :: proc(path: string, cached: bool) -> (repository: Repository, reason: string) {
 	repo, ok := git_open(path)
 	if !ok {
 		return {}, "it is not a Git repository"
@@ -374,8 +415,15 @@ decision_create :: proc(state: ^State, name: string) -> ^Decision {
 	decision.hash = record.hash
 	decision.installed_tag = record.tag
 
-	hash, ok := hash_directory(directory)
-	state.counts.installed_hashes += 1
+	installed, hashed := state.installed_hashes[name]
+	if !hashed {
+		installed.hash, installed.ok = hash_directory(directory)
+		state.installed_hashes[name] = installed
+		state.counts.installed_hashes += 1
+	}
+
+	assert(installed.ok || installed.hash == "")
+	hash, ok := installed.hash, installed.ok
 	if !ok || hash != record.hash {
 		warn(state.env, "%s does not match the hash recorded for %s %s", directory, name, record.tag)
 		if state.options.repair {
@@ -392,6 +440,30 @@ decision_create :: proc(state: ^State, name: string) -> ^Decision {
 	}
 
 	return decision
+}
+
+// Resolves a tag once per command; the recorded commit is checked every time.
+state_tag_commit :: proc(state: ^State, path, name, tag, expected: string) -> (commit: string, ok: bool) {
+	hit: bool
+	commit, hit = state.tag_commits[{path, tag}]
+	if !hit {
+		commit = repository_tag_commit(state.env, path, name, tag, "") or_return
+		state.tag_commits[{path, tag}] = commit
+		state.counts.tag_resolves += 1
+	}
+
+	assert(is_commit_id(commit))
+	if expected != "" && expected != commit {
+		return "", fail(
+			state.env,
+			"%s %s was recorded at commit %s but the tag now resolves to %s; a published tag must not move",
+			name,
+			tag,
+			expected,
+			commit,
+		)
+	}
+	return commit, true
 }
 
 repository_tag_commit :: proc(env: ^Env, path, name, tag, expected_commit: string) -> (commit: string, ok: bool) {
@@ -423,8 +495,7 @@ decision_set_tag :: proc(state: ^State, decision: ^Decision, tag, source, commit
 		chosen, _ = highest_tag(repository.tags[:])
 	}
 
-	resolved := repository_tag_commit(state.env, repository.path, decision.name, chosen, commit) or_return
-	state.counts.tag_resolves += 1
+	resolved := state_tag_commit(state, repository.path, decision.name, chosen, commit) or_return
 	decision.tag = chosen
 	decision.commit = resolved
 	decision.source = repository.source
@@ -558,9 +629,24 @@ decision_apply :: proc(state: ^State, decision: ^Decision, request: Request) -> 
 	return decision_set_tag(state, decision, chosen, request.source, request.commit, request.source_trusted)
 }
 
-// The files a decided release installs, read once.
+// What a decided release installs and pins, when an earlier pass read it.
+decision_cached_facts :: proc(state: ^State, decision: ^Decision) -> (facts: Release_Facts, hit: bool) {
+	facts, hit = state.selections[{decision.repository, decision.commit, decision.name}]
+	if hit {
+		assert(facts.commit == decision.commit)
+		decision.selection = facts.selection
+		decision.has_selection = true
+	}
+	return
+}
+
+// The files a decided release installs, read once per command.
 decision_selection :: proc(state: ^State, decision: ^Decision, release: Git_Release) -> bool {
 	if decision.has_selection {
+		return true
+	}
+
+	if _, hit := decision_cached_facts(state, decision); hit {
 		return true
 	}
 
@@ -574,6 +660,9 @@ decision_selection :: proc(state: ^State, decision: ^Decision, release: Git_Rele
 		return fail(state.env, "cannot read %s %s from %s", decision.name, decision.tag, decision.repository)
 	}
 
+	facts := Release_Facts{commit = decision.commit, selection = selection}
+	facts.pins, facts.problem = release_pins(release)
+	state.selections[{decision.repository, decision.commit, decision.name}] = facts
 	decision.selection = selection
 	decision.has_selection = true
 	return true
@@ -641,15 +730,25 @@ enqueue_dependencies :: proc(state: ^State, decision: ^Decision, recorded: bool,
 		}
 	case .Keep, .Install:
 		by = fmt.aprintf("%s %s", decision.name, decision.tag)
-		release, ok := git_release_open(decision.repository, decision.tag, decision.commit)
+		facts, hit := decision_cached_facts(state, decision)
+		release: Git_Release
+		ok := hit
+		if !hit {
+			release, ok = git_release_open(decision.repository, decision.tag, decision.commit)
+		}
+
 		if ok {
-			defer git_release_close(release)
-			decision_selection(state, decision, release) or_return
+			if !hit {
+				defer git_release_close(release)
+				decision_selection(state, decision, release) or_return
+				facts, hit = decision_cached_facts(state, decision)
+				assert(hit)
+			}
+
 			imports = decision.selection.imports
-			problem: string
-			pins, problem = release_pins(release)
-			if problem != "" {
-				return fail(state.env, "%s: %s %v", by, PACKAGES_PATH, problem)
+			pins = facts.pins
+			if facts.problem != "" {
+				return fail(state.env, "%s: %s %v", by, PACKAGES_PATH, facts.problem)
 			}
 		} else if decision.action == .Keep {
 			read_ok: bool

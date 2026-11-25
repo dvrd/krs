@@ -1066,8 +1066,9 @@ resolution_touches_each_repository_once :: proc(t: ^testing.T) {
 
 		counts, ok := resolution_counts(t, &fixture)
 		if ok {
-			testing.expectf(t, counts.repository_opens > 0, "%v", counts)
-			testing.expectf(t, counts.selections > 0, "%v", counts)
+			testing.expectf(t, counts.repository_opens == 4, "%v", counts)
+			testing.expectf(t, counts.tag_resolves == 4, "%v", counts)
+			testing.expectf(t, counts.selections == 4, "%v", counts)
 		}
 	}
 
@@ -1080,8 +1081,8 @@ resolution_touches_each_repository_once :: proc(t: ^testing.T) {
 
 		counts, ok := resolution_counts(t, &fixture)
 		if ok {
-			testing.expectf(t, counts.installed_hashes > 0, "%v", counts)
-			testing.expectf(t, counts.selections > 0, "%v", counts)
+			testing.expectf(t, counts.installed_hashes == 4, "%v", counts)
+			testing.expectf(t, counts.selections == 4, "%v", counts)
 		}
 	}
 }
