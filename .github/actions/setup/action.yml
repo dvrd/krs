@@ -27,9 +27,13 @@ runs:
       shell: bash
       run: |
         sha=$(cut -d: -f2 ODIN_VERSION)
-        git clone https://github.com/dvrd/Odin.git "$RUNNER_TEMP/Odin"
+        git init -q "$RUNNER_TEMP/Odin"
         cd "$RUNNER_TEMP/Odin"
-        git checkout --detach "$sha"
+        git remote add origin https://github.com/dvrd/Odin.git
+        # By SHA: the pinned commit need not be on a branch.
+        git fetch --depth 1 origin "$sha"
+        git checkout --detach FETCH_HEAD
+        [ "$(git rev-parse HEAD)" = "$sha" ]
         ./build_odin.sh release
 
     - name: Add Odin to PATH
