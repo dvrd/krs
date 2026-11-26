@@ -61,7 +61,10 @@ recover_count :: proc(t: ^testing.T, recover: ^Recover_Fixture) -> int {
 	}
 	defer db.close(database)
 
-	records, _ := krs.journal_list_all(&recover.env, database)
+	records, listed := krs.journal_list_all(&recover.env, database)
+	if !testing.expect(t, listed) {
+		return -1
+	}
 	return len(records)
 }
 

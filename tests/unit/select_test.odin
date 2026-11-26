@@ -93,7 +93,8 @@ hash_directory_is_stable_and_follows_content :: proc(t: ^testing.T) {
 	testing.expect_value(t, ignoring, hash)
 
 	fixtures.write_file(t, krs.path_join(second, "assets/b.js"), "changed\n")
-	changed, _ := krs.hash_directory(second)
+	changed, rehashed := krs.hash_directory(second)
+	testing.expect(t, rehashed)
 	testing.expect(t, changed != hash)
 
 	_, found := krs.hash_directory(krs.path_join(fixture.base, "missing"))

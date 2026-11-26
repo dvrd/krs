@@ -21,9 +21,20 @@ test_layout :: proc(root: string) -> bool {
 // tests/unit or tests/e2e is out of place. Only top-level files are scanned.
 layout_problems :: proc(root: string, allocator := context.allocator) -> [dynamic]string {
 	problems := make([dynamic]string, allocator)
-	sources := odin_files(root, "src", allocator)
-	units := odin_files(root, "tests/unit", allocator)
-	e2es := odin_files(root, "tests/e2e", allocator)
+	sources, sources_err := odin_files(root, "src", allocator)
+	units, units_err := odin_files(root, "tests/unit", allocator)
+	e2es, e2es_err := odin_files(root, "tests/e2e", allocator)
+	if sources_err != nil {
+		append(&problems, fmt.aprintf("cannot read src: %v", sources_err, allocator = allocator))
+	}
+
+	if units_err != nil {
+		append(&problems, fmt.aprintf("cannot read tests/unit: %v", units_err, allocator = allocator))
+	}
+
+	if e2es_err != nil {
+		append(&problems, fmt.aprintf("cannot read tests/e2e: %v", e2es_err, allocator = allocator))
+	}
 
 	pending := PENDING
 	for source in sources {
@@ -91,22 +102,23 @@ layout_problems :: proc(root: string, allocator := context.allocator) -> [dynami
 }
 
 // odin_files returns the sorted names of the .odin files directly in root/dir.
-odin_files :: proc(root, dir: string, allocator := context.allocator) -> []string {
+// err is set when the directory cannot be read; an empty directory is not an error.
+odin_files :: proc(root, dir: string, allocator := context.allocator) -> (names: []string, err: os.Error) {
 	path := fmt.tprintf("%s/%s", root, dir)
-	entries, err := os.read_all_directory_by_path(path, context.temp_allocator)
-	if err != nil {
-		return nil
+	entries, read_err := os.read_all_directory_by_path(path, context.temp_allocator)
+	if read_err != nil {
+		return nil, read_err
 	}
 
-	names := make([dynamic]string, allocator)
+	found := make([dynamic]string, allocator)
 	for entry in entries {
 		if entry.type != .Directory && strings.has_suffix(entry.name, ".odin") {
-			append(&names, strings.clone(entry.name, allocator))
+			append(&found, strings.clone(entry.name, allocator))
 		}
 	}
 
-	slice.sort(names[:])
-	return names[:]
+	slice.sort(found[:])
+	return found[:], nil
 }
 
 is_file_in :: proc(root, dir, name: string) -> bool {
@@ -124,7 +136,36 @@ read_text :: proc(root, dir, name: string) -> string {
 has_test_attribute :: proc(text: string) -> bool {
 	rest := text
 	for line in strings.split_lines_iterator(&rest) {
-		if strings.has_prefix(line, "@(test)") {
+		if is_test_attribute(line) {
+			return true
+		}
+	}
+	return false
+}
+
+// is_test_attribute reports whether a line is an attribute list such as
+// `@(test)` or `@(test, private)` that names `test`.
+is_test_attribute :: proc(line: string) -> bool {
+	trimmed := strings.trim_right_space(line)
+	if !strings.has_prefix(trimmed, "@(") {
+		return false
+	}
+
+	body := trimmed[len("@("):]
+	close := strings.index_byte(body, ')')
+	if close < 0 {
+		return false
+	}
+
+	rest := body[:close]
+	for element in strings.split_iterator(&rest, ",") {
+		name := strings.trim_space(element)
+		equals := strings.index_byte(name, '=')
+		if equals >= 0 {
+			name = strings.trim_space(name[:equals])
+		}
+
+		if name == "test" {
 			return true
 		}
 	}
@@ -132,13 +173,81 @@ has_test_attribute :: proc(text: string) -> bool {
 }
 
 calls_any_command :: proc(text: string) -> bool {
-	rest := text
+	code := code_only(text, context.temp_allocator)
+	rest := code
 	for line in strings.split_lines_iterator(&rest) {
 		if calls_command(line) {
 			return true
 		}
 	}
 	return false
+}
+
+// code_only returns a copy of text with comments, string contents and rune
+// literals blanked to spaces. Newlines are kept so line numbers do not change.
+code_only :: proc(text: string, allocator := context.allocator) -> string {
+	out := make([]u8, len(text), allocator)
+	copy(out, text)
+
+	blank :: proc(out: []u8, i: int) {
+		if out[i] != '\n' {
+			out[i] = ' '
+		}
+	}
+
+	i := 0
+	for i < len(text) {
+		c := text[i]
+		switch {
+		case c == '/' && i + 1 < len(text) && text[i + 1] == '/':
+			for i < len(text) && text[i] != '\n' {
+				blank(out, i)
+				i += 1
+			}
+		case c == '/' && i + 1 < len(text) && text[i + 1] == '*':
+			depth := 0
+			for i < len(text) {
+				if text[i] == '/' && i + 1 < len(text) && text[i + 1] == '*' {
+					depth += 1
+					blank(out, i)
+					blank(out, i + 1)
+					i += 2
+				} else if text[i] == '*' && i + 1 < len(text) && text[i + 1] == '/' {
+					depth -= 1
+					blank(out, i)
+					blank(out, i + 1)
+					i += 2
+					if depth == 0 {
+						break
+					}
+				} else {
+					blank(out, i)
+					i += 1
+				}
+			}
+		case c == '"' || c == '\'':
+			i += 1
+			for i < len(text) && text[i] != c && text[i] != '\n' {
+				if text[i] == '\\' && i + 1 < len(text) && text[i + 1] != '\n' {
+					blank(out, i)
+					i += 1
+				}
+				blank(out, i)
+				i += 1
+			}
+			i += 1
+		case c == '`':
+			i += 1
+			for i < len(text) && text[i] != '`' {
+				blank(out, i)
+				i += 1
+			}
+			i += 1
+		case:
+			i += 1
+		}
+	}
+	return string(out)
 }
 
 // calls_command matches (^|[^A-Za-z0-9_.])(fixtures\.)?(run|run_in)\( on one

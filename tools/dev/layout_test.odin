@@ -2,6 +2,7 @@ package main
 
 import "core:fmt"
 import "core:os"
+import "core:strings"
 import "core:testing"
 
 @(test)
@@ -23,6 +24,59 @@ calls_command_matches_bare_run_calls :: proc(t: ^testing.T) {
 	}
 	for example in cases {
 		testing.expect_value(t, calls_command(example.line), example.matches)
+	}
+}
+
+@(test)
+is_test_attribute_finds_test_in_the_list :: proc(t: ^testing.T) {
+	cases := [?]struct {
+		line:    string,
+		matches: bool,
+	} {
+		{"@(test)", true},
+		{"@(test, private)", true},
+		{"@(private, test)", true},
+		{"@( test )", true},
+		{"@(testing)", false},
+		{"@(private)", false},
+		{"// @(test)", false},
+		{"test :: proc", false},
+	}
+	for example in cases {
+		testing.expect_value(t, is_test_attribute(example.line), example.matches)
+	}
+}
+
+@(test)
+calls_any_command_ignores_comments_and_strings :: proc(t: ^testing.T) {
+	cases := [?]struct {
+		text:    string,
+		matches: bool,
+	} {
+		{"fixtures.run(t, x)", true},
+		{"/* a */ run(t)", true},
+		{"// fixtures.run(t)", false},
+		{"msg := \"run(t)\"", false},
+		{"s := `run_in(`", false},
+		{"/* run( */", false},
+		{"/* /* */\nrun( */", false},
+		{"c := '('\nx := 1", false},
+	}
+	for example in cases {
+		testing.expect_value(t, calls_any_command(example.text), example.matches)
+	}
+}
+
+@(test)
+layout_reports_an_unreadable_directory :: proc(t: ^testing.T) {
+	root := make_tree(t, "unreadable", {})
+	defer os.remove_all(root)
+
+	testing.expect(t, os.remove_all(fmt.tprintf("%s/tests/e2e", root)) == nil)
+	problems := layout_problems(root, context.temp_allocator)
+	testing.expect_value(t, len(problems), 1)
+	if len(problems) == 1 {
+		testing.expect(t, strings.has_prefix(problems[0], "cannot read tests/e2e"))
 	}
 }
 
