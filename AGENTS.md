@@ -104,9 +104,10 @@ fails with `confirmation is needed`.
 
 ## Release version
 
-[`src/VERSION`](src/VERSION) holds the stable `vMAJOR.MINOR.PATCH` version.
-`task version` reads it from the checkout. `krs --version` reports the
-version embedded when the binary was built.
+The version comes from Git tags. `task version` prints it for the checkout:
+the release tag, or `git describe` output such as `v0.2.0-3-gabc1234`
+between releases. Task embeds that value when it builds KRS, and
+`krs --version` reports it.
 
 Use [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 `fix:` bumps the patch. `feat:` bumps the minor from `v1.0.0` onward and the
@@ -114,13 +115,29 @@ patch on `v0.x`. A `!` after the type or scope, or a `BREAKING CHANGE:` or
 `BREAKING-CHANGE:` footer, bumps the major from `v1.0.0` onward and the minor
 on `v0.x`. Other commit types only trigger a bump if marked as breaking.
 
-1. Run `task version:next` to see the version selected from the highest-impact
-   commit since the latest release tag. Fetch release tags and history if your
-   checkout is missing them.
-2. Run `task release` from a clean branch that contains the latest release.
-   It updates `src/VERSION`, builds and tests KRS, commits the version file as
-   `chore(release): vMAJOR.MINOR.PATCH`, and creates a local annotated tag.
-   If tagging fails after the commit, rerun `task release` from that commit.
+Run `task version:next` to see the version selected from the highest-impact
+commit since the latest release tag. Fetch release tags and history if your
+checkout is missing them.
+
+Merging a pull request from `develop` into `main` publishes the release
+automatically. The release workflow builds and tests KRS at the new version,
+creates the tag and the GitHub release on the merge commit, with notes
+generated from the commits since the previous release and a macOS arm64
+binary (which needs `brew install libgit2`), and fast-forwards `develop` to
+the released commit. No release commit is made.
+
+Merge `develop` into `main` with "Create a merge commit". A squash merge
+makes the pull request's single commit, not the individual commits, decide
+the version bump and the release notes.
+
+If the workflow warns that `develop` has moved, bring the tag into `develop`
+by hand: `git fetch --tags && git switch develop && git merge origin/main && git push`.
+Until then, `task version:next` on `develop` fails with "this branch must
+contain the latest release".
+
+`task release -- --dry-run` previews the release locally: the version, the
+notes and the packaged binary. `task release` publishes from a clean local
+`main` that is pushed, and needs `gh` to be logged in.
 
 When changing command behavior, check the CLI usage in
 [`src/commands.odin`](src/commands.odin) and the package resolution tests in
