@@ -1,11 +1,11 @@
-package tests
+package fixtures
 
 import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:testing"
 
-import krs "../src"
+import krs "../../src"
 
 // A throwaway machine: a home with krs settings, a source directory of Git
 // repositories, an Odin root and a project. Nothing outside `base` is touched.

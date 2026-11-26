@@ -23,8 +23,11 @@ tasks:
   test:
     desc: Run the KRS test suite
     cmds:
+      - sh tools/check-test-layout.sh
       - task: odin
-        vars: {ACTION: test, PACKAGE: tests, BINARY: krs-tests, OPT: none}
+        vars: {ACTION: test, PACKAGE: tests/unit, BINARY: krs-unit-tests, OPT: none}
+      - task: odin
+        vars: {ACTION: test, PACKAGE: tests/e2e, BINARY: krs-e2e-tests, OPT: none}
       - task: odin
         vars: {ACTION: test, PACKAGE: tools/version, BINARY: krs-version-tests, OPT: none}
 

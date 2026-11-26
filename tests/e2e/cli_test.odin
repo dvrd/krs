@@ -1,9 +1,12 @@
-package tests
+package e2e
 
+import "core:fmt"
+import "core:os"
 import "core:strings"
 import "core:testing"
 
-import krs "../src"
+import krs "../../src"
+import "../fixtures"
 
 Misuse :: struct {
 	arguments: []string,
@@ -14,8 +17,8 @@ Misuse :: struct {
 @(test)
 cli_rejects_misuse :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
-	fixture := fixture_make(t)
-	defer fixture_destroy(&fixture)
+	fixture := fixtures.fixture_make(t)
+	defer fixtures.fixture_destroy(&fixture)
 
 	table := []Misuse {
 		{{"--bogus"}, krs.EXIT_USAGE, "unknown option --bogus"},
@@ -32,7 +35,7 @@ cli_rejects_misuse :: proc(t: ^testing.T) {
 		{{"pin", "beta", "--yes"}, krs.EXIT_USAGE, "--yes does not apply to pin"},
 	}
 	for row in table {
-		result := run(&fixture, "", ..row.arguments)
+		result := fixtures.run(&fixture, "", ..row.arguments)
 		testing.expectf(t, result.code == row.code, "%v: exit %d, want %d\nerr: %s", row.arguments, result.code, row.code, result.err)
 		testing.expectf(t, strings.contains(result.err, row.text), "%v: expected \"%s\" in: %s", row.arguments, row.text, result.err)
 	}
@@ -41,10 +44,25 @@ cli_rejects_misuse :: proc(t: ^testing.T) {
 @(test)
 cli_help_prints_usage :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
-	fixture := fixture_make(t)
-	defer fixture_destroy(&fixture)
+	fixture := fixtures.fixture_make(t)
+	defer fixtures.fixture_destroy(&fixture)
 
-	result := run(&fixture, "", "--help")
+	result := fixtures.run(&fixture, "", "--help")
 	testing.expect_value(t, result.code, krs.EXIT_OK)
-	expect_contains(&fixture, result.out, "krs link ls")
+	fixtures.expect_contains(&fixture, result.out, "krs link ls")
+}
+
+@(test)
+cli_version_uses_the_release_tag_format :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixtures.fixture_make(t)
+	defer fixtures.fixture_destroy(&fixture)
+
+	// Version reporting does not require an Odin root or a valid package lock.
+	os.remove_all(fixture.root)
+	fixtures.write_file(t, krs.path_join(fixture.project, krs.PACKAGES_PATH), "invalid JSON")
+	result := fixtures.run(&fixture, "", "--version")
+	fixtures.expect_ok(&fixture, result)
+	testing.expect(t, krs.KRS_VERSION != "")
+	testing.expect_value(t, result.out, fmt.aprintf("krs %s\n", krs.KRS_VERSION))
 }
