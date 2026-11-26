@@ -186,8 +186,18 @@ doctor_wait :: proc(
 
 	pid := process.pid
 	status: i32
-	polls := seconds * DOCTOR_POLLS_PER_SECOND
-	for poll: i64 = 0; poll < polls; {
+	limit := time.Duration(seconds) * time.Second
+	started := time.tick_now()
+
+	// The deadline ends the wait. The bound only stops the loop if the clock
+	// misbehaves; sleeps that run long on a loaded machine do not stretch it.
+	max_polls := seconds * DOCTOR_POLLS_PER_SECOND * 4
+	for poll: i64 = 0; poll < max_polls; poll += 1 {
+		elapsed := time.tick_since(started)
+		if elapsed >= limit {
+			break
+		}
+
 		reaped := posix.waitpid(pid, &status, {.NOHANG})
 		if reaped == -1 {
 			if posix.errno() == .EINTR {
@@ -205,8 +215,7 @@ doctor_wait :: proc(
 		}
 
 		assert(reaped == 0)
-		time.sleep(DOCTOR_POLL_INTERVAL)
-		poll += 1
+		time.sleep(min(DOCTOR_POLL_INTERVAL, limit - elapsed))
 	}
 
 	// Timed out: stop the group, and the shell itself in case it moved to
