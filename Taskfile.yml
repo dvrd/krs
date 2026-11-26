@@ -42,11 +42,28 @@ tasks:
       - sh tools/version/release.sh next
 
   release:
-    desc: Build, test, commit, and tag the next release from Conventional Commits
+    desc: Publish the next release to GitHub (use -- --dry-run to preview)
     silent: true
     cmds:
       - task: version:tool
-      - sh tools/version/release.sh release
+      - |
+        set -e
+        out="${KRS_CHECK_DIR:-${TMPDIR:-/tmp}/krs-check}"
+        case '{{.CLI_ARGS}}' in
+          --dry-run)
+            sh tools/version/release.sh prepare --dry-run "$out/release"
+            ;;
+          '')
+            sh tools/version/release.sh prepare "$out/release"
+            if [ -f "$out/release/tag" ]; then
+              sh tools/version/release.sh publish "$out/release"
+            fi
+            ;;
+          *)
+            printf 'krs: usage: task release [-- --dry-run]\n' >&2
+            exit 2
+            ;;
+        esac
 
   version:tool:
     internal: true

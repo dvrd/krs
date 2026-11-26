@@ -21,8 +21,28 @@ run :: proc(env: ^krs.Env, args: []string) -> bool {
 		return true
 	}
 
+	if len(args) == 4 && args[0] == "notes" {
+		for tag in args[1:3] {
+			if _, valid := krs.parse_tag(tag); !valid {
+				return krs.fail(env, "%s must be a vMAJOR.MINOR.PATCH tag", tag)
+			}
+		}
+
+		log := read_input(env, args[3]) or_return
+		repository := os.get_env("GITHUB_REPOSITORY", context.allocator)
+		if repository == "" {
+			repository = "dvrd/krs"
+		}
+		fmt.print(release_notes(log, args[1], args[2], repository))
+		return true
+	}
+
 	if len(args) != 3 || args[0] != "next" {
-		return krs.fail(env, "usage: version latest <tag-list> or version next <base-tag> <git-log>")
+		return krs.fail(
+			env,
+			"usage: version latest <tag-list>, version next <base-tag> <git-log> or " +
+			"version notes <base-tag> <next-tag> <git-log>",
+		)
 	}
 
 	base, valid := krs.parse_tag(args[1])
