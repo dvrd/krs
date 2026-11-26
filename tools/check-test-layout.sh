@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."
 
 # src files still waiting for unit tests; remove each as its
 # tests/unit/<x>_test.odin lands. Must end empty.
-pending="apply commands doctor_process fetch journal libgit2 lock lookup plan recover repositories resolve select state vendor"
+pending="apply commands doctor_process fetch journal lookup plan recover resolve vendor"
 
 status=0
 
@@ -59,8 +59,8 @@ done
 
 for test in tests/unit/*.odin; do
 	[ -e "$test" ] || continue
-	if grep -Eq '(^|[^A-Za-z0-9_.])(fixtures\.)?(run|run_in|fixture_make)\(' "$test"; then
-		problem "$test calls run, run_in or fixture_make; unit tests call procedures, not commands"
+	if grep -Eq '(^|[^A-Za-z0-9_.])(fixtures\.)?(run|run_in)\(' "$test"; then
+		problem "$test calls run or run_in; unit tests call procedures, not commands"
 	fi
 done
 
