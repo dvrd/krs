@@ -36,6 +36,8 @@ USAGE_FORMAT :: `%[0]susage:%[1]s
       copy this project's dependencies into vendor/ and use them
   krs %[0]sunlink%[1]s <package> [--root=<path>] [--restore] [--yes]
       remove a link; with --restore, install the recorded release
+  krs %[0]suninstall%[1]s <package>... [--root=<path>] [--yes]
+      remove packages from this project and from shared/ (or vendor/)
   krs %[0]srecover%[1]s
       list interrupted file publications
   krs %[0]srecover abandon%[1]s <id> [--yes]
@@ -499,6 +501,10 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 		ok = command_link(env, options, words[1])
 	case words[0] == "unlink" && len(words) == 2:
 		ok = command_unlink(env, options, words[1])
+	case words[0] == "uninstall" && len(words) >= 2:
+		ok = command_uninstall(env, options, words[1:])
+	case words[0] == "uninstall" && len(words) == 1:
+		ok = fail(env, "name the packages to uninstall")
 	case words[0] == "pin" && len(words) == 2:
 		ok = command_pin(env, options, words[1], true)
 	case words[0] == "unpin" && len(words) == 2:
