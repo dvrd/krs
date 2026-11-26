@@ -17,16 +17,23 @@ tasks:
   install:
     desc: Build KRS and install it in ~/.local/bin or KRS_INSTALL_DIR
     silent: true
+    deps: [toolchain]
     cmds:
-      - sh tools/install.sh
+      - '"${KRS_CHECK_DIR:-${TMPDIR:-/tmp}/krs-check}/krs-dev" install'
 
   test:
     desc: Run the KRS test suite
+    deps: [toolchain]
     cmds:
+      - '"${KRS_CHECK_DIR:-${TMPDIR:-/tmp}/krs-check}/krs-dev" test-layout'
       - task: odin
-        vars: {ACTION: test, PACKAGE: tests, BINARY: krs-tests, OPT: none}
+        vars: {ACTION: test, PACKAGE: tests/unit, BINARY: krs-unit-tests, OPT: none}
+      - task: odin
+        vars: {ACTION: test, PACKAGE: tests/e2e, BINARY: krs-e2e-tests, OPT: none}
       - task: odin
         vars: {ACTION: test, PACKAGE: tools/version, BINARY: krs-version-tests, OPT: none}
+      - task: odin
+        vars: {ACTION: test, PACKAGE: tools/dev, BINARY: krs-dev-tests, OPT: none}
 
   version:
     desc: Print the release version
@@ -39,31 +46,17 @@ tasks:
     silent: true
     cmds:
       - task: version:tool
-      - sh tools/version/release.sh next
+      - '"${KRS_CHECK_DIR:-${TMPDIR:-/tmp}/krs-check}/krs-version" next'
 
   release:
-    desc: Publish the next release to GitHub (use -- --dry-run to preview)
+    desc: Preview the next release locally (version, notes, package)
     silent: true
     cmds:
       - task: version:tool
       - |
         set -e
         out="${KRS_CHECK_DIR:-${TMPDIR:-/tmp}/krs-check}"
-        case '{{.CLI_ARGS}}' in
-          --dry-run)
-            sh tools/version/release.sh prepare --dry-run "$out/release"
-            ;;
-          '')
-            sh tools/version/release.sh prepare "$out/release"
-            if [ -f "$out/release/tag" ]; then
-              sh tools/version/release.sh publish "$out/release"
-            fi
-            ;;
-          *)
-            printf 'krs: usage: task release [-- --dry-run]\n' >&2
-            exit 2
-            ;;
-        esac
+        "$out/krs-version" prepare --dry-run "$out/release"
 
   # Called by the release workflow; no desc keeps it out of `task --list`.
   version:tool:
@@ -74,8 +67,14 @@ tasks:
   toolchain:
     internal: true
     run: once
+    silent: true
     cmds:
-      - sh tools/check-toolchain.sh
+      - |
+        set -e
+        out="${KRS_CHECK_DIR:-${TMPDIR:-/tmp}/krs-check}"
+        mkdir -p "$out"
+        odin build tools/dev -out:"$out/krs-dev" -vet -o:none
+        "$out/krs-dev" toolchain
 
   odin:
     internal: true
