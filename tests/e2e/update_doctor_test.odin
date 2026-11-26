@@ -253,14 +253,14 @@ doctor_timeout_stops_the_whole_command :: proc(t: ^testing.T) {
 	// Only the trial with beta v0.2.0 hangs. Its background child would
 	// outlive a killed shell and create the marker.
 	test := fmt.aprintf(
-		"--doctor-test=if grep -q 'RELEASE :: \"v0.2.0\"' %s/beta/beta.odin; then ( sleep 2; touch '%s' ) & sleep 37; fi",
+		"--doctor-test=if grep -q 'RELEASE :: \"v0.2.0\"' %s/beta/beta.odin; then ( sleep 4; touch '%s' ) & sleep 37; fi",
 		fixture.shared,
 		marker,
 	)
 	result := fixtures.run(&fixture, "", "update", "-u", "--doctor", "--yes", "--doctor-timeout=1s", test)
 	testing.expectf(t, result.code == 1, "exit %d\nout: %s\nerr: %s", result.code, result.out, result.err)
 	fixtures.expect_contains(&fixture, result.out, "timed out")
-	time.sleep(3 * time.Second)
+	time.sleep(5 * time.Second)
 	testing.expectf(t, !os.exists(marker), "a child of the test command survived the timeout")
 	fixtures.expect_release(&fixture, "beta", "v0.1.0")
 }

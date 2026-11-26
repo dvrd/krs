@@ -79,12 +79,20 @@ install :: proc() -> int {
 		return install_fail(fmt.tprintf("cannot create %s", bin_dir))
 	}
 
+	if signal_code, stopped := interrupted(); stopped {
+		return signal_code
+	}
+
 	if err := os.copy_file(staged, fmt.tprintf("%s/krs", out)); err != nil {
 		return install_fail(fmt.tprintf("cannot stage %s", destination))
 	}
 
 	if posix.chmod(strings.clone_to_cstring(staged, context.temp_allocator), {.IRUSR, .IWUSR, .IXUSR, .IRGRP, .IXGRP, .IROTH, .IXOTH}) != .OK {
 		return install_fail(fmt.tprintf("cannot copy KRS to %s", destination))
+	}
+
+	if signal_code, stopped := interrupted(); stopped {
+		return signal_code
 	}
 
 	if err := os.rename(staged, destination); err != nil {
@@ -94,6 +102,14 @@ install :: proc() -> int {
 	icon(32, "✓", false)
 	fmt.printfln("krs: installed %s", destination)
 	return EXIT_OK
+}
+
+// interrupted reports the exit code for a received SIGINT or SIGTERM.
+interrupted :: proc() -> (code: int, stopped: bool) {
+	if received_signal == nil {
+		return EXIT_OK, false
+	}
+	return (EXIT_INTERRUPTED if received_signal == .SIGINT else EXIT_TERMINATED), true
 }
 
 ensure_dir :: proc(path: string) -> bool {

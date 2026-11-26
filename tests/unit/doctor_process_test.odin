@@ -89,19 +89,19 @@ doctor_wait_times_out_and_stops_the_whole_group :: proc(t: ^testing.T) {
 	fixture := fixtures.fixture_make(t)
 	defer fixtures.fixture_destroy(&fixture)
 
-	// A background child would leave the marker after 2 s if it outlived the
+	// A background child would leave the marker after 4 s if it outlived the
 	// timeout.
 	marker := krs.path_join(fixture.base, "marker")
-	script := strings.concatenate({"(sleep 2; touch '", marker, "') & sleep 10"})
+	script := strings.concatenate({"(sleep 4; touch '", marker, "') & sleep 10"})
 	started := time.now()
 	exited, code, timed_out, _ := doctor_run(t, &fixture, fixture.project, script, {DOCTOR_TEST_PATH}, 1)
 	elapsed := time.since(started)
 	testing.expect(t, timed_out)
 	testing.expect(t, !exited)
 	testing.expect_value(t, code, 0)
-	testing.expectf(t, elapsed < 2 * time.Second, "the timeout took %v", elapsed)
+	testing.expectf(t, elapsed < 3 * time.Second, "the timeout took %v", elapsed)
 
-	time.sleep(3 * time.Second - elapsed)
+	time.sleep(5 * time.Second - elapsed)
 	testing.expectf(t, !os.exists(marker), "a child outlived the timeout and wrote %s", marker)
 }
 

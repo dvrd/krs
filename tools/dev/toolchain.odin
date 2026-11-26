@@ -8,12 +8,16 @@ import "core:strings"
 LIBGIT2_FLOOR :: "1.2"
 
 // toolchain_matches reports whether an `odin version` string agrees with the
-// recorded ODIN_VERSION: equal dates, and one hash a prefix of the other.
+// recorded ODIN_VERSION: equal dates, and one non-empty hash a prefix of the other.
 toolchain_matches :: proc(actual, expected: string) -> bool {
 	actual_date, actual_hash := split_version(strings.trim_space(actual))
 	expected_date, expected_hash := split_version(strings.trim_space(expected))
 
 	if actual_date != expected_date {
+		return false
+	}
+
+	if actual_hash == "" || expected_hash == "" {
 		return false
 	}
 
