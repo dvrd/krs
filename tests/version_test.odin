@@ -20,7 +20,8 @@ cli_version_uses_the_release_tag_format :: proc(t: ^testing.T) {
 	write_file(t, krs.path_join(fixture.project, krs.PACKAGES_PATH), "invalid JSON")
 	result := run(&fixture, "", "--version")
 	expect_ok(&fixture, result)
-	testing.expect_value(t, result.out, fmt.aprintf("krs %s\n", strings.trim_space(krs.RELEASE_TAG)))
+	testing.expect(t, krs.KRS_VERSION != "")
+	testing.expect_value(t, result.out, fmt.aprintf("krs %s\n", krs.KRS_VERSION))
 }
 
 // `alpha` is released recording `beta` at `beta_tag`.

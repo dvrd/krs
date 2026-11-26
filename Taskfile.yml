@@ -32,7 +32,7 @@ tasks:
     desc: Print the release version
     silent: true
     cmds:
-      - cat src/VERSION
+      - printf '%s\n' "${KRS_VERSION:-$(git describe --tags --match 'v[0-9]*' --dirty 2>/dev/null || echo dev)}"
 
   version:next:
     desc: Preview the next version from Conventional Commits
@@ -73,9 +73,10 @@ tasks:
         if [ "$(uname -s)" != Darwin ]; then
           link_flags="$link_flags -Wl,-rpath,$git_libdir"
         fi
+        version="${KRS_VERSION:-$(git describe --tags --match 'v[0-9]*' --dirty 2>/dev/null || echo dev)}"
         mkdir -p "$out"
         odin {{.ACTION}} {{.PACKAGE}} -out:"$out/{{.BINARY}}" -vet -o:{{.OPT | default "none"}} \
-          "-extra-linker-flags:$link_flags"
+          "-define:KRS_VERSION=$version" "-extra-linker-flags:$link_flags"
         if [ '{{.QUIET}}' != true ]; then
           printf 'krs: %s complete (%s/%s)\n' '{{.ACTION}}' "$out" '{{.BINARY}}'
         fi
