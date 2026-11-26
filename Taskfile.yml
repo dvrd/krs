@@ -17,19 +17,23 @@ tasks:
   install:
     desc: Build KRS and install it in ~/.local/bin or KRS_INSTALL_DIR
     silent: true
+    deps: [toolchain]
     cmds:
-      - sh tools/install.sh
+      - '"${KRS_CHECK_DIR:-${TMPDIR:-/tmp}/krs-check}/krs-dev" install'
 
   test:
     desc: Run the KRS test suite
+    deps: [toolchain]
     cmds:
-      - sh tools/check-test-layout.sh
+      - '"${KRS_CHECK_DIR:-${TMPDIR:-/tmp}/krs-check}/krs-dev" test-layout'
       - task: odin
         vars: {ACTION: test, PACKAGE: tests/unit, BINARY: krs-unit-tests, OPT: none}
       - task: odin
         vars: {ACTION: test, PACKAGE: tests/e2e, BINARY: krs-e2e-tests, OPT: none}
       - task: odin
         vars: {ACTION: test, PACKAGE: tools/version, BINARY: krs-version-tests, OPT: none}
+      - task: odin
+        vars: {ACTION: test, PACKAGE: tools/dev, BINARY: krs-dev-tests, OPT: none}
 
   version:
     desc: Print the release version
@@ -77,8 +81,14 @@ tasks:
   toolchain:
     internal: true
     run: once
+    silent: true
     cmds:
-      - sh tools/check-toolchain.sh
+      - |
+        set -e
+        out="${KRS_CHECK_DIR:-${TMPDIR:-/tmp}/krs-check}"
+        mkdir -p "$out"
+        odin build tools/dev -out:"$out/krs-dev" -vet -o:none
+        "$out/krs-dev" toolchain
 
   odin:
     internal: true

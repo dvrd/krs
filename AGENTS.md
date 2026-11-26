@@ -143,6 +143,6 @@ notes and the packaged binary. `task release` publishes from a clean local
 Tests live in `tests/unit/` (one `<x>_test.odin` per `src/<x>.odin`, calling
 its procedures directly), `tests/e2e/` (whole commands through the harness, one
 file per command area) and `tests/fixtures/` (the harness). `task test` checks
-the mapping with `tools/check-test-layout.sh`. When changing command behavior,
+the mapping with `krs-dev test-layout` (`tools/dev`). When changing command behavior,
 check the CLI usage in [`src/commands.odin`](src/commands.odin) and the
 matching file in `tests/e2e/`.
