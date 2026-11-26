@@ -32,7 +32,7 @@ tasks:
     desc: Print the release version
     silent: true
     cmds:
-      - cat src/VERSION
+      - printf '%s\n' "${KRS_VERSION:-$(git describe --tags --match 'v[0-9]*' --dirty 2>/dev/null || echo dev)}"
 
   version:next:
     desc: Preview the next version from Conventional Commits
@@ -42,14 +42,31 @@ tasks:
       - sh tools/version/release.sh next
 
   release:
-    desc: Build, test, commit, and tag the next release from Conventional Commits
+    desc: Publish the next release to GitHub (use -- --dry-run to preview)
     silent: true
     cmds:
       - task: version:tool
-      - sh tools/version/release.sh release
+      - |
+        set -e
+        out="${KRS_CHECK_DIR:-${TMPDIR:-/tmp}/krs-check}"
+        case '{{.CLI_ARGS}}' in
+          --dry-run)
+            sh tools/version/release.sh prepare --dry-run "$out/release"
+            ;;
+          '')
+            sh tools/version/release.sh prepare "$out/release"
+            if [ -f "$out/release/tag" ]; then
+              sh tools/version/release.sh publish "$out/release"
+            fi
+            ;;
+          *)
+            printf 'krs: usage: task release [-- --dry-run]\n' >&2
+            exit 2
+            ;;
+        esac
 
+  # Called by the release workflow; no desc keeps it out of `task --list`.
   version:tool:
-    internal: true
     cmds:
       - task: odin
         vars: {ACTION: build, PACKAGE: tools/version, BINARY: krs-version, OPT: none, QUIET: 'true'}
@@ -73,9 +90,10 @@ tasks:
         if [ "$(uname -s)" != Darwin ]; then
           link_flags="$link_flags -Wl,-rpath,$git_libdir"
         fi
+        version="${KRS_VERSION:-$(git describe --tags --match 'v[0-9]*' --dirty 2>/dev/null || echo dev)}"
         mkdir -p "$out"
         odin {{.ACTION}} {{.PACKAGE}} -out:"$out/{{.BINARY}}" -vet -o:{{.OPT | default "none"}} \
-          "-extra-linker-flags:$link_flags"
+          "-define:KRS_VERSION=$version" "-extra-linker-flags:$link_flags"
         if [ '{{.QUIET}}' != true ]; then
           printf 'krs: %s complete (%s/%s)\n' '{{.ACTION}}' "$out" '{{.BINARY}}'
         fi

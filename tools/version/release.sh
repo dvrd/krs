@@ -1,4 +1,19 @@
 #!/bin/sh
+# Releases KRS from Conventional Commits.
+#
+#   release.sh next
+#       Print the next release tag, or nothing when no commit since the latest
+#       tag calls for a release.
+#   release.sh prepare [--dry-run] <dir>
+#       Build, test and package the next release from HEAD into <dir>, without
+#       network access. <dir>/tag is written last, only when everything worked.
+#       --dry-run allows a dirty tree and prints the result.
+#   release.sh publish [--sync-develop] <dir>
+#       Create the GitHub release prepared in <dir>. --sync-develop (CI only)
+#       then fast-forwards develop to the released commit.
+#
+# A tag pushed by hand without a GitHub release is not detected here; publish
+# it by hand with `gh release create <tag> --verify-tag`.
 set -eu
 
 fail() {
@@ -6,96 +21,193 @@ fail() {
     exit 1
 }
 
-# Check the commit and index again after running the build and tests.
-guard_checkout() {
-    current_head=$(git rev-parse --verify HEAD)
-    current_status=$(git status --porcelain --untracked-files=all)
-    if [ "$current_head" != "$head" ] || [ "$current_status" != "$1" ]; then
-        fail "$2"
-    fi
+usage() {
+    fail 'usage: release.sh next | prepare [--dry-run] <dir> | publish [--sync-develop] <dir>'
 }
 
 cleanup() {
-    if [ "$restore_version" = true ] &&
-       [ "$(git rev-parse --verify HEAD)" = "$head" ] &&
-       cmp -s "$scratch/VERSION" "$version_path"; then
-        git restore --worktree --source="$head" -- "$version_path" ||
-            printf 'krs: could not restore %s after the release failed\n' "$version_path" >&2
-    fi
-    if [ -n "$staged" ]; then
-        rm -f "$staged"
-    fi
     rm -rf "$scratch"
 }
 
+out="${KRS_CHECK_DIR:-${TMPDIR:-/tmp}/krs-check}"
+version_tool="$out/krs-version"
+
+[ $# -ge 1 ] || usage
 mode=$1
-version_path=src/VERSION
-version_tool="${KRS_CHECK_DIR:-${TMPDIR:-/tmp}/krs-check}/krs-version"
-head=$(git rev-parse --verify HEAD)
-if [ "$mode" = release ]; then
-    git symbolic-ref --quiet HEAD >/dev/null || fail 'release from a branch'
-    guard_checkout '' 'commit your changes before releasing'
-fi
+shift
 
 scratch=$(mktemp -d "${TMPDIR:-/tmp}/krs-release.XXXXXX")
-staged=
-restore_version=false
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-git tag --list 'v*' > "$scratch/tags"
-base=$("$version_tool" latest "$scratch/tags")
-[ -n "$base" ] || fail 'fetch the release tags before calculating the next version'
-base_commit=$(git rev-parse --verify "refs/tags/$base^{commit}")
-git merge-base --is-ancestor "$base_commit" "$head" ||
-    fail "this branch must contain the latest release $base"
+# Fails unless HEAD is still $head and the tree is clean.
+guard_checkout() {
+    current_head=$(git rev-parse --verify HEAD)
+    current_status=$(git status --porcelain --untracked-files=all)
+    if [ "$current_head" != "$head" ] || [ -n "$current_status" ]; then
+        fail "$1"
+    fi
+}
 
-git log -z --format=%B "$base_commit..$head" > "$scratch/commits"
-next=$("$version_tool" next "$base" "$scratch/commits")
-if [ -z "$next" ]; then
-    printf 'krs: no release-worthy commits since %s\n' "$base" >&2
-    exit 0
-fi
+# Sets base, base_commit and next from the release tags and the commits
+# between the latest one and $head.
+next_release() {
+    git tag --list 'v*' > "$scratch/tags"
+    base=$("$version_tool" latest "$scratch/tags")
+    [ -n "$base" ] || fail 'fetch the release tags before calculating the next version'
+    base_commit=$(git rev-parse --verify "refs/tags/$base^{commit}")
+    git merge-base --is-ancestor "$base_commit" "$head" ||
+        fail "this branch must contain the latest release $base"
 
-if [ "$mode" = next ]; then
-    printf '%s\n' "$next"
-    exit 0
-fi
+    git log -z --format=%B "$base_commit..$head" > "$scratch/commits"
+    next=$("$version_tool" next "$base" "$scratch/commits")
+}
 
-commit_message="chore(release): $next"
-current=$(git show "$head:$version_path")
-if [ "$current" = "$base" ]; then
-    guard_checkout '' 'the checkout changed while calculating the next release'
-    printf '%s\n' "$next" > "$scratch/VERSION"
-    staged=$(mktemp src/.krs-version.XXXXXX)
-    cp "$scratch/VERSION" "$staged"
-    chmod 644 "$staged"
-    restore_version=true
-    mv -f "$staged" "$version_path"
-    staged=
-
-    task check
-    guard_checkout " M $version_path" 'the checkout changed while verifying the release'
-    cmp -s "$scratch/VERSION" "$version_path" || fail "$version_path changed during verification"
-    git commit --only -m "$commit_message" -- "$version_path"
+release_next() {
+    [ $# -eq 0 ] || usage
     head=$(git rev-parse --verify HEAD)
-    restore_version=false
-else
-    # The release commit may already exist if creating its tag failed.
-    [ "$current" = "$next" ] || fail "$version_path must match the latest release $base"
-    task check
-fi
+    next_release
+    if [ -z "$next" ]; then
+        printf 'krs: no release-worthy commits since %s\n' "$base" >&2
+        exit 0
+    fi
+    printf '%s\n' "$next"
+}
 
-guard_checkout '' 'the checkout changed before tagging the release'
-[ "$(git log -1 --format=%s "$head")" = "$commit_message" ] &&
-    [ "$(git diff-tree --no-commit-id --name-only -r "$head")" = "$version_path" ] &&
-    [ "$(git show "$head:$version_path")" = "$next" ] ||
-    fail "expected a release commit changing only $version_path to $next"
+release_prepare() {
+    dry_run=false
+    if [ "${1:-}" = --dry-run ]; then
+        dry_run=true
+        shift
+    fi
+    [ $# -eq 1 ] && [ -n "$1" ] || usage
+    dist=$1
 
-git tag --list 'v*' > "$scratch/tags"
-[ "$("$version_tool" latest "$scratch/tags")" = "$base" ] ||
-    fail 'release tags changed during verification'
+    head=$(git rev-parse --verify HEAD)
+    if [ "$dry_run" = false ]; then
+        guard_checkout 'commit your changes before releasing'
+    fi
 
-git tag -a "$next" -m "KRS $next" "$head"
-printf 'krs: tagged %s\n' "$next"
+    # Refuse a destination that is, or contains, the checkout before deleting it.
+    top=$(git rev-parse --show-toplevel)
+    mkdir -p "$dist"
+    dist=$(cd "$dist" && pwd -P)
+    top=$(cd "$top" && pwd -P)
+    case "$top/" in
+    "$dist"/*) fail "refusing to use $dist: it contains the checkout" ;;
+    esac
+    [ "$dist" != / ] || fail 'refusing to use /'
+
+    rm -rf "$dist"
+    mkdir -p "$dist"
+    next_release
+    if [ -z "$next" ]; then
+        printf 'krs: no release-worthy commits since %s\n' "$base"
+        exit 0
+    fi
+
+    git log -z --no-merges --format='%h%n%B' "$base_commit..$head" > "$scratch/notes-log"
+    "$version_tool" notes "$base" "$next" "$scratch/notes-log" > "$dist/notes.md"
+
+    KRS_VERSION="$next" task check
+    KRS_VERSION="$next" task build
+    # Archive the copy that is version-checked, not the shared build path.
+    mkdir -p "$scratch/package"
+    cp "$out/krs" "$scratch/package/krs"
+    reported=$("$scratch/package/krs" --version)
+    [ "$reported" = "krs $next" ] || fail "the release binary reports '$reported', not 'krs $next'"
+    if [ "$dry_run" = false ]; then
+        guard_checkout 'the checkout changed while building the release'
+    fi
+
+    os=$(uname -s | tr '[:upper:]' '[:lower:]')
+    arch=$(uname -m)
+    if [ "$arch" = x86_64 ]; then
+        arch=amd64
+    fi
+    asset="krs-$next-$os-$arch.tar.gz"
+    tar -czf "$dist/$asset" -C "$scratch/package" krs
+    (cd "$dist" && shasum -a 256 "$asset" > "$asset.sha256")
+
+    printf '%s\n' "$head" > "$dist/target"
+    printf '%s\n' "$next" > "$dist/tag"
+
+    if [ "$dry_run" = true ]; then
+        printf '\nkrs: release %s of %s (dry run, nothing published)\n\n' "$next" "$head"
+        cat "$dist/notes.md"
+        printf '\nkrs: assets\n%s\n%s\n' "$dist/$asset" "$dist/$asset.sha256"
+    fi
+}
+
+release_publish() {
+    sync_develop=false
+    if [ "${1:-}" = --sync-develop ]; then
+        sync_develop=true
+        shift
+    fi
+    [ $# -eq 1 ] && [ -n "$1" ] || usage
+    dist=$1
+
+    [ -f "$dist/tag" ] || fail "$dist holds no prepared release"
+    tag=$(cat "$dist/tag")
+    target=$(cat "$dist/target")
+    if [ "$sync_develop" = true ]; then
+        [ -n "${GH_TOKEN:-}" ] || fail '--sync-develop needs GH_TOKEN'
+        [ -n "${GITHUB_REPOSITORY:-}" ] || fail '--sync-develop needs GITHUB_REPOSITORY'
+    fi
+
+    git fetch --quiet origin main
+    main=$(git rev-parse --verify origin/main)
+    [ "$target" = "$main" ] ||
+        fail "releases are published from main; $target is not origin/main ($main)"
+
+    if draft=$(gh release view "$tag" --json isDraft -q .isDraft 2> "$scratch/view-error"); then
+        case $draft in
+        true)
+            fail "draft release $tag exists; publish or delete it"
+            ;;
+        false)
+            printf 'krs: %s is already released\n' "$tag"
+            exit 0
+            ;;
+        *)
+            fail "gh release view $tag printed '$draft'"
+            ;;
+        esac
+    fi
+    grep -q 'release not found' "$scratch/view-error" || fail "$(cat "$scratch/view-error")"
+
+    set --
+    for asset in "$dist/krs-$tag-"*.tar.gz; do
+        [ -f "$asset" ] && [ -f "$asset.sha256" ] || fail "$dist holds no package for $tag"
+        set -- "$@" "$asset" "$asset.sha256"
+    done
+    gh release create "$tag" "$@" --target "$target" --title "krs $tag" \
+        --notes-file "$dist/notes.md" --latest
+    printf 'krs: released %s\n' "$tag"
+
+    if [ "$sync_develop" = true ]; then
+        # Fast-forward only: a rejected push means develop moved since the merge.
+        if git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$target:refs/heads/develop"; then
+            printf 'krs: develop now contains %s\n' "$tag"
+        else
+            printf '::warning::develop has moved since the merge; merge main into develop to bring in %s\n' "$tag"
+        fi
+    fi
+}
+
+case $mode in
+next)
+    release_next "$@"
+    ;;
+prepare)
+    release_prepare "$@"
+    ;;
+publish)
+    release_publish "$@"
+    ;;
+*)
+    usage
+    ;;
+esac

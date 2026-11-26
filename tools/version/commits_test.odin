@@ -47,3 +47,60 @@ release_bumps_follow_the_version_series :: proc(t: ^testing.T) {
 	testing.expect_value(t, release_bump(stable, .Feature), .Minor)
 	testing.expect_value(t, release_bump(stable, .Breaking), .Major)
 }
+
+@(test)
+release_notes_group_commits_by_kind :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	log :=
+		"aaa1111\nfeat(update): add --target\n\x00" +
+		"bbb2222\nfix: stop the test command\n\x00" +
+		"ccc3333\nfeat!: drop the old flag\n\x00" +
+		"ddd4444\nfeat(cli)!: rename commands\n\nLonger body.\n\n" +
+		"BREAKING CHANGE: `krs up` is now `krs update`\nand `krs ls` is gone\nRefs #12\n\x00" +
+		"eee5555\nrefactor(config): change the format\n\nBREAKING-CHANGE: config.json needs format 2\n\x00" +
+		"fff6666\nperf(install): hash files once\n\x00" +
+		"abc7777\ndocs: explain releases\n\x00" +
+		"abc8888\nUpdate the readme\n\x00" +
+		"abc9999\nchore(release): v0.1.0\n\x00" +
+		"abc0000\nci(release): publish binaries\n\x00"
+	expected :=
+		"## Breaking changes\n\n" +
+		"- drop the old flag (ccc3333)\n" +
+		"- **cli:** rename commands (ddd4444)\n" +
+		"  `krs up` is now `krs update`\n" +
+		"  and `krs ls` is gone\n" +
+		"- **config:** change the format (eee5555)\n" +
+		"  config.json needs format 2\n\n" +
+		"## Features\n\n" +
+		"- **update:** add --target (aaa1111)\n\n" +
+		"## Fixes\n\n" +
+		"- stop the test command (bbb2222)\n\n" +
+		"## Performance\n\n" +
+		"- **install:** hash files once (fff6666)\n\n" +
+		"## Other changes\n\n" +
+		"- explain releases (docs) (abc7777)\n" +
+		"- Update the readme (abc8888)\n" +
+		"- **release:** publish binaries (ci) (abc0000)\n\n" +
+		"The macOS binary requires libgit2: `brew install libgit2`.\n\n" +
+		"**Full changelog**: https://github.com/dvrd/krs/compare/v0.1.0...v0.2.0\n"
+	testing.expect_value(t, release_notes(log, "v0.1.0", "v0.2.0", "dvrd/krs"), expected)
+}
+
+@(test)
+release_notes_omit_empty_sections :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	expected :=
+		"## Fixes\n\n" +
+		"- **doctor:** stop on timeout (1234567)\n\n" +
+		"The macOS binary requires libgit2: `brew install libgit2`.\n\n" +
+		"**Full changelog**: https://github.com/someone/fork/compare/v1.2.3...v1.2.4\n"
+	log := "1234567\nfix(doctor): stop on timeout\n"
+	testing.expect_value(t, release_notes(log, "v1.2.3", "v1.2.4", "someone/fork"), expected)
+
+	trailer :=
+		"The macOS binary requires libgit2: `brew install libgit2`.\n\n" +
+		"**Full changelog**: https://github.com/dvrd/krs/compare/v0.1.0...v0.1.1\n"
+	testing.expect_value(t, release_notes("", "v0.1.0", "v0.1.1", "dvrd/krs"), trailer)
+	only_release := "abc9999\nchore(release): v0.1.0\n\x00"
+	testing.expect_value(t, release_notes(only_release, "v0.1.0", "v0.1.1", "dvrd/krs"), trailer)
+}

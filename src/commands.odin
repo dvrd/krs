@@ -85,7 +85,9 @@ EXIT_OK :: 0
 EXIT_FAILED :: 1
 EXIT_USAGE :: 2
 
-RELEASE_TAG :: #load("VERSION", string)
+// Set by the build: the release tag, or `git describe` output between
+// releases. "dev" when built without Task.
+KRS_VERSION :: #config(KRS_VERSION, "dev")
 
 print_usage :: proc(output: io.Writer, colored: bool) {
 	if colored {
@@ -98,13 +100,7 @@ print_usage :: proc(output: io.Writer, colored: bool) {
 // Runs one krs command. `arguments` excludes the program name.
 run :: proc(env: ^Env, arguments: []string) -> int {
 	if len(arguments) == 1 && arguments[0] == "--version" {
-		tag := strings.trim_space(RELEASE_TAG)
-		if _, valid := parse_tag(tag); !valid {
-			fail(env, "VERSION must contain a vMAJOR.MINOR.PATCH tag")
-			return EXIT_FAILED
-		}
-
-		say(env, "krs %s", tag)
+		say(env, "krs %s", KRS_VERSION)
 		return EXIT_OK
 	}
 
