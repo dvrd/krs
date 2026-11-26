@@ -399,3 +399,92 @@ unlink_restore_refuses_a_foreign_path :: proc(t: ^testing.T) {
 	testing.expect(t, os.is_directory(directory))
 	testing.expect_value(t, fixtures.manifest_text(&fixture), manifest)
 }
+
+LIBS_TARGET :: "dvrd/odin-tigerbeetle"
+LIBS_ORIGIN :: "https://github.com/dvrd/odin-tigerbeetle.git"
+
+// Configures `tiggerbeetle` as the import name of the GitHub repository.
+libs_config :: proc(fixture: ^fixtures.Fixture) {
+	text := fmt.aprintf(
+		"{{\"format\": 1, \"source_directories\": [\"%s\"], \"libs\": {{\"tiggerbeetle\": {{\"source\": \"github\", \"target\": \"%s\"}}}}}}\n",
+		fixture.sources,
+		LIBS_TARGET,
+	)
+	fixtures.write_file(fixture.t, krs.path_join(fixture.home, krs.CONFIG_PATH), text)
+}
+
+// A checkout named `directory` with a src/ and the given origin.
+libs_checkout :: proc(fixture: ^fixtures.Fixture, directory, origin: string) -> string {
+	path := fixtures.repository_make(fixture, directory)
+	fixtures.write_file(fixture.t, krs.path_join(path, "src/tiggerbeetle.odin"), "package tiggerbeetle\n")
+	if origin != "" {
+		fixtures.git(fixture.t, path, "remote", "add", "origin", origin)
+	}
+
+	return path
+}
+
+@(test)
+link_uses_the_libs_checkout :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixtures.fixture_make(t)
+	defer fixtures.fixture_destroy(&fixture)
+
+	libs_config(&fixture)
+	checkout := libs_checkout(&fixture, "tigerbeetle", LIBS_ORIGIN)
+
+	result := fixtures.run(&fixture, "", "link", "tiggerbeetle", "--yes")
+	fixtures.expect_ok(&fixture, result)
+
+	link := krs.path_join(fixture.shared, "tiggerbeetle")
+	testing.expect(t, krs.is_symbolic_link(link))
+	target, _ := os.read_link(link, context.temp_allocator)
+	testing.expect_value(t, target, krs.path_join(checkout, "src"))
+	fixtures.expect_contains(&fixture, fixtures.manifest_text(&fixture), fmt.aprintf("\"path\": \"%s\"", checkout))
+	fixtures.expect_contains(&fixture, result.out, "using")
+	fixtures.expect_contains(&fixture, result.out, "libs: dvrd/odin-tigerbeetle")
+}
+
+@(test)
+link_prefers_the_directory_named_like_the_package :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixtures.fixture_make(t)
+	defer fixtures.fixture_destroy(&fixture)
+
+	libs_config(&fixture)
+	libs_checkout(&fixture, "tigerbeetle", LIBS_ORIGIN)
+	named := libs_checkout(&fixture, "tiggerbeetle", "")
+
+	fixtures.expect_ok(&fixture, fixtures.run(&fixture, "", "link", "tiggerbeetle", "--yes"))
+
+	target, _ := os.read_link(krs.path_join(fixture.shared, "tiggerbeetle"), context.temp_allocator)
+	testing.expect_value(t, target, krs.path_join(named, "src"))
+}
+
+@(test)
+link_refuses_two_checkouts_of_the_libs_repository :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixtures.fixture_make(t)
+	defer fixtures.fixture_destroy(&fixture)
+
+	libs_config(&fixture)
+	libs_checkout(&fixture, "tigerbeetle", LIBS_ORIGIN)
+	libs_checkout(&fixture, "tigerbeetle-copy", "git@github.com:dvrd/odin-tigerbeetle.git")
+
+	result := fixtures.run(&fixture, "", "link", "tiggerbeetle", "--yes")
+	fixtures.expect_failure(&fixture, result, "more than one checkout of dvrd/odin-tigerbeetle")
+	testing.expect(t, !krs.path_present(krs.path_join(fixture.shared, "tiggerbeetle")))
+}
+
+@(test)
+link_reports_a_libs_entry_without_a_checkout :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixtures.fixture_make(t)
+	defer fixtures.fixture_destroy(&fixture)
+
+	libs_config(&fixture)
+	libs_checkout(&fixture, "elsewhere", "https://github.com/dvrd/other.git")
+
+	result := fixtures.run(&fixture, "", "link", "tiggerbeetle", "--yes")
+	fixtures.expect_failure(&fixture, result, "and no checkout of dvrd/odin-tigerbeetle there")
+}

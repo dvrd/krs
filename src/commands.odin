@@ -747,7 +747,22 @@ say_version_change :: proc(env: ^Env, name, from, to: string, compatibility: Ver
 
 // Finds the directory to link: the first `<source directory>/<name>` that has
 // a `src/`.
-link_find :: proc(state: ^State, name: string) -> (repository: string, ok: bool) {
+LINK_SCAN_LIMIT :: 4096
+
+// The GitHub repository `libs` names for a package, when it is valid.
+link_libs_repository :: proc(state: ^State, name: string) -> (repository: GitHub_Repository, ok: bool) {
+	library, configured := state.config.libs[name]
+	if !configured || library.source != "github" {
+		return {}, false
+	}
+
+	return github_repository(library.target)
+}
+
+// A checkout named like the package wins. Otherwise the package's `libs`
+// entry picks the one checkout whose origin is that GitHub repository.
+// `reported` is set when the lookup already failed with a message.
+link_find :: proc(state: ^State, name: string) -> (repository: string, ok: bool, reported: bool) {
 	for directory in state.config.source_directories {
 		candidate := path_join(directory, name)
 		if !os.is_directory(candidate) {
@@ -755,13 +770,69 @@ link_find :: proc(state: ^State, name: string) -> (repository: string, ok: bool)
 		}
 
 		if os.is_directory(path_join(candidate, "src")) {
-			return candidate, true
+			return candidate, true, false
 		}
 
 		report_once(state, "skipped %s: it has no src/", candidate)
 	}
 
-	return "", false
+	wanted, configured := link_libs_repository(state, name)
+	if !configured {
+		return "", false, false
+	}
+
+	identity := source_identity(github_origin(wanted))
+	matches: [dynamic]string
+	for directory in state.config.source_directories {
+		link_scan(state, directory, identity, &matches)
+	}
+
+	if len(matches) == 0 {
+		return "", false, false
+	}
+
+	if len(matches) > 1 {
+		fail(state.env, "more than one checkout of %s: %s; keep one in the source directories", github_locator(wanted), strings.join(matches[:], ", "))
+		return "", false, true
+	}
+
+	info(state.env, "using %s for %s (libs: %s)", matches[0], name, github_locator(wanted))
+	return matches[0], true, false
+}
+
+// Appends the checkouts directly under `directory` that have a src/ and whose
+// origin is `identity`, in name order.
+link_scan :: proc(state: ^State, directory, identity: string, matches: ^[dynamic]string) {
+	entries, err := os.read_all_directory_by_path(directory, context.temp_allocator)
+	if err != nil {
+		return
+	}
+
+	slice.sort_by(entries, proc(a, b: os.File_Info) -> bool {
+		return a.name < b.name
+	})
+	if len(entries) > LINK_SCAN_LIMIT {
+		warn(state.env, "%s has more than %d entries; the search for a checkout stopped there", directory, LINK_SCAN_LIMIT)
+		entries = entries[:LINK_SCAN_LIMIT]
+	}
+
+	for entry in entries {
+		candidate := path_join(directory, entry.name)
+		if !os.is_directory(path_join(candidate, "src")) {
+			continue
+		}
+
+		repo, opened := git_open(candidate)
+		if !opened {
+			continue
+		}
+
+		origin := git_source(repo)
+		git_close(repo)
+		if origin == identity {
+			append(matches, candidate)
+		}
+	}
 }
 
 command_link :: proc(env: ^Env, options: Options, name: string) -> bool {
@@ -779,8 +850,15 @@ command_link :: proc(env: ^Env, options: Options, name: string) -> bool {
 		return fail(env, "%s uses vendor/; links are not available in vendor mode", state.scope.project)
 	}
 
-	repository, found := link_find(state, name)
+	repository, found, reported := link_find(state, name)
+	if reported {
+		return false
+	}
+
 	if !found {
+		if wanted, configured := link_libs_repository(state, name); configured {
+			return fail(env, "no repository with a src/ for \"%s\" in the source directories, and no checkout of %s there", name, github_locator(wanted))
+		}
 		return fail(env, "no repository with a src/ for \"%s\" in the source directories", name)
 	}
 

@@ -93,12 +93,12 @@ link_find_takes_the_first_checkout_with_a_src :: proc(t: ^testing.T) {
 	}
 	append(&state.config.source_directories, first, fixture.sources)
 
-	repository, found := krs.link_find(&state, "beta")
+	repository, found, _ := krs.link_find(&state, "beta")
 	testing.expect(t, found)
 	testing.expect_value(t, repository, krs.path_join(fixture.sources, "beta"))
 	testing.expect(t, strings.contains(strings.to_string(out), "it has no src/"))
 
-	_, found = krs.link_find(&state, "gamma")
+	_, found, _ = krs.link_find(&state, "gamma")
 	testing.expect(t, !found)
 }
 
