@@ -70,6 +70,68 @@ command_uninstall :: proc(env: ^Env, options: Options, names: []string) -> bool 
 	return true
 }
 
+// Bare `krs uninstall`: lets a person choose the packages from a fuzzy list,
+// then uninstalls them as command_uninstall does, confirmation included: the
+// picker chooses, the confirmation shows what leaves shared/.
+command_uninstall_pick :: proc(env: ^Env, options: Options) -> bool {
+	if options.frozen {
+		return fail(env, "--frozen does not apply to uninstall")
+	}
+
+	if !env.interactive {
+		return fail(env, "name the packages to uninstall, or run krs uninstall in a terminal to choose them")
+	}
+
+	items := uninstall_pick_items(env, options) or_return
+	if len(items) == 0 {
+		info(env, "%s records no packages", PACKAGES_PATH)
+		return true
+	}
+
+	chosen := picker_run(env, items[:], "uninstall>") or_return
+	assert(len(chosen) > 0)
+	assert(len(chosen) <= len(items))
+
+	names := make([dynamic]string, 0, len(chosen))
+	for index in chosen {
+		append(&names, items[index].label)
+	}
+	return command_uninstall(env, options, names[:])
+}
+
+// One picker item per package this project records. The state is closed on
+// return, before command_uninstall opens it again and takes the same locks.
+// Linked packages are listed too; command_uninstall refuses them.
+uninstall_pick_items :: proc(env: ^Env, options: Options) -> (items: [dynamic]Picker_Item, ok: bool) {
+	state := state_open(env, options) or_return
+	defer state_close(state)
+
+	for record in state.packages.packages {
+		manifest := manifest_find(&state.manifest, record.name)
+		linked := manifest != nil && manifest.linked != ""
+		detail := uninstall_pick_detail(record.tag, record.pinned, linked)
+		append(&items, Picker_Item{label = record.name, detail = detail})
+	}
+	assert(len(items) == len(state.packages.packages))
+
+	return items, true
+}
+
+// The dimmed text after a package name in the picker: its tag, then
+// `pinned` and `linked` when they apply.
+uninstall_pick_detail :: proc(tag: string, pinned, linked: bool) -> string {
+	parts := make([dynamic]string, 0, 3, context.temp_allocator)
+	append(&parts, tag)
+	if pinned {
+		append(&parts, "pinned")
+	}
+
+	if linked {
+		append(&parts, "linked")
+	}
+	return strings.join(parts[:], " ")
+}
+
 // A package can be uninstalled when this project records it and it is not a
 // development link, which `krs unlink` owns.
 uninstall_check :: proc(state: ^State, name: string) -> bool {

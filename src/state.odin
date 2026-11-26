@@ -70,6 +70,10 @@ Env :: struct {
 	err:          io.Writer,
 	input:        io.Reader,
 	interactive:  bool, // a person can be asked
+	// Switches the terminal behind `input` into raw mode (true) and back
+	// (false), so keys arrive one by one without echo. Nil when `input` is
+	// not a terminal, as in tests, which feed the key bytes as they are.
+	raw_input:    proc(enable: bool) -> bool,
 	style:        Output_Style,
 	level:        Log_Level, // zero value .Info prints everything
 	progress:     ^Progress,

@@ -29,6 +29,16 @@ packages_remove_drops_only_the_named_record :: proc(t: ^testing.T) {
 	testing.expect_value(t, file.packages[1].name, "gamma")
 }
 
+// The picker shows the tag, then whether the package is pinned or linked.
+@(test)
+uninstall_pick_detail_lists_tag_and_flags :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	testing.expect_value(t, krs.uninstall_pick_detail("v1.0.0", false, false), "v1.0.0")
+	testing.expect_value(t, krs.uninstall_pick_detail("v1.0.0", true, false), "v1.0.0 pinned")
+	testing.expect_value(t, krs.uninstall_pick_detail("v1.0.0", false, true), "v1.0.0 linked")
+	testing.expect_value(t, krs.uninstall_pick_detail("v1.0.0", true, true), "v1.0.0 pinned linked")
+}
+
 // The project's own files that import shared:beta (directly or a
 // subpackage), and not those under a krs vendor/ or importing another name.
 @(test)

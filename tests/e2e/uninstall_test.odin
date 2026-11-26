@@ -174,3 +174,112 @@ uninstall_warns_when_a_dependency_imports_it :: proc(t: ^testing.T) {
 	testing.expect(t, !strings.contains(fixtures.packages_text(&fixture), "\"beta\""))
 	fixtures.expect_contains(&fixture, fixtures.packages_text(&fixture), "\"alpha\"")
 }
+
+// Bare `krs uninstall` reads the picker's keys from the input: typing filters
+// the list, and Enter uninstalls the package under the cursor.
+@(test)
+uninstall_picker_filters_and_removes :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixtures.fixture_make(t)
+	defer fixtures.fixture_destroy(&fixture)
+
+	uninstall_fixture_install(&fixture)
+
+	result := fixtures.run(&fixture, "gam\r", "uninstall", "--yes")
+	fixtures.expect_ok(&fixture, result)
+	fixtures.expect_contains(&fixture, result.out, "uninstall> gam")
+	fixtures.expect_contains(&fixture, result.out, "removed gamma from")
+	testing.expect(t, !krs.path_present(krs.path_join(fixture.shared, "gamma")))
+	testing.expect(t, !strings.contains(fixtures.packages_text(&fixture), "\"gamma\""))
+	fixtures.expect_contains(&fixture, fixtures.packages_text(&fixture), "\"beta\"")
+	fixtures.expect_release(&fixture, "beta", "v1.0.0")
+}
+
+// Ctrl-A selects every package, Enter uninstalls them all.
+@(test)
+uninstall_picker_selects_all :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixtures.fixture_make(t)
+	defer fixtures.fixture_destroy(&fixture)
+
+	uninstall_fixture_install(&fixture)
+
+	result := fixtures.run(&fixture, "\x01\r", "uninstall", "--yes")
+	fixtures.expect_ok(&fixture, result)
+	fixtures.expect_contains(&fixture, result.out, "removed beta, gamma from")
+	testing.expect(t, !krs.path_present(krs.path_join(fixture.shared, "beta")))
+	testing.expect(t, !krs.path_present(krs.path_join(fixture.shared, "gamma")))
+	testing.expect(t, !strings.contains(fixtures.packages_text(&fixture), "\"beta\""))
+	testing.expect(t, !strings.contains(fixtures.packages_text(&fixture), "\"gamma\""))
+}
+
+// Ctrl-C, or the input ending, chooses nothing and writes nothing.
+@(test)
+uninstall_picker_cancel_changes_nothing :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixtures.fixture_make(t)
+	defer fixtures.fixture_destroy(&fixture)
+
+	uninstall_fixture_install(&fixture)
+	packages := fixtures.packages_text(&fixture)
+	manifest := fixtures.manifest_text(&fixture)
+
+	fixtures.expect_failure(&fixture, fixtures.run(&fixture, "\x03", "uninstall", "--yes"), "nothing was chosen")
+	fixtures.expect_failure(&fixture, fixtures.run(&fixture, "be", "uninstall", "--yes"), "nothing was chosen")
+	testing.expect_value(t, fixtures.packages_text(&fixture), packages)
+	testing.expect_value(t, fixtures.manifest_text(&fixture), manifest)
+	fixtures.expect_release(&fixture, "beta", "v1.0.0")
+}
+
+// The picker reads only its keys, so the confirmation that follows reads its
+// answer from the same input.
+@(test)
+uninstall_picker_then_confirms :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixtures.fixture_make(t)
+	defer fixtures.fixture_destroy(&fixture)
+
+	uninstall_fixture_install(&fixture)
+	packages := fixtures.packages_text(&fixture)
+
+	unanswered := fixtures.run(&fixture, "beta\r", "uninstall")
+	fixtures.expect_failure(&fixture, unanswered, "nothing was changed")
+	fixtures.expect_contains(&fixture, unanswered.out, "krs will remove from")
+	testing.expect_value(t, fixtures.packages_text(&fixture), packages)
+	fixtures.expect_release(&fixture, "beta", "v1.0.0")
+
+	answered := fixtures.run(&fixture, "beta\ry\n", "uninstall")
+	fixtures.expect_ok(&fixture, answered)
+	fixtures.expect_contains(&fixture, answered.out, "removed beta from")
+	testing.expect(t, !krs.path_present(krs.path_join(fixture.shared, "beta")))
+	testing.expect(t, !strings.contains(fixtures.packages_text(&fixture), "\"beta\""))
+	fixtures.expect_contains(&fixture, fixtures.packages_text(&fixture), "\"gamma\"")
+}
+
+// Without a terminal there is nobody to choose: the names are required.
+@(test)
+uninstall_picker_needs_a_terminal :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixtures.fixture_make(t)
+	defer fixtures.fixture_destroy(&fixture)
+
+	uninstall_fixture_install(&fixture)
+	packages := fixtures.packages_text(&fixture)
+
+	result := fixtures.run(&fixture, "", "uninstall")
+	fixtures.expect_failure(&fixture, result, "name the packages to uninstall, or run krs uninstall in a terminal")
+	testing.expect_value(t, fixtures.packages_text(&fixture), packages)
+}
+
+// A project that records no packages has nothing to offer.
+@(test)
+uninstall_picker_with_no_packages :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixtures.fixture_make(t)
+	defer fixtures.fixture_destroy(&fixture)
+
+	result := fixtures.run(&fixture, "\r", "uninstall")
+	fixtures.expect_ok(&fixture, result)
+	fixtures.expect_contains(&fixture, result.out, "records no packages")
+	testing.expect(t, !strings.contains(result.out, "uninstall>"))
+}
