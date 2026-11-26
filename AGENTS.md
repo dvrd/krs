@@ -135,10 +135,9 @@ by hand: `git fetch --tags && git switch develop && git merge origin/main && git
 Until then, `task version:next` on `develop` fails with "this branch must
 contain the latest release".
 
-`task release -- --dry-run` previews the release locally: the version, the
-notes and the packaged binary. `task release` publishes from a clean local
-`main` that is pushed, and needs `gh` to be logged in. It publishes only when
-`HEAD` is the current `origin/main`.
+`task release` previews the release locally: the version, the notes and the
+packaged binary. Nothing is published; releases are published only by the
+release workflow when `develop` is merged into `main`.
 
 Tests live in `tests/unit/` (one `<x>_test.odin` per `src/<x>.odin`, calling
 its procedures directly), `tests/e2e/` (whole commands through the harness, one

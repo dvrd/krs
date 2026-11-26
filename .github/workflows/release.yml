@@ -38,7 +38,7 @@ jobs:
           KRS_CHECK_DIR: ${{ runner.temp }}/krs-release
         run: |
           task version:tool
-          sh tools/version/release.sh prepare "$RUNNER_TEMP/krs-dist"
+          "$KRS_CHECK_DIR/krs-version" prepare "$RUNNER_TEMP/krs-dist"
           if [ -f "$RUNNER_TEMP/krs-dist/tag" ]; then
             echo "release=true" >> "$GITHUB_OUTPUT"
           fi
@@ -79,5 +79,55 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+        shell: bash
         run: |
-          sh tools/version/release.sh publish --sync-develop "$RUNNER_TEMP/krs-dist"
+          set -euo pipefail
+
+          fail() {
+            printf 'krs: %s\n' "$*" >&2
+            exit 1
+          }
+
+          dist="$RUNNER_TEMP/krs-dist"
+          [ -f "$dist/tag" ] || fail "$dist holds no prepared release"
+          tag=$(cat "$dist/tag")
+          target=$(cat "$dist/target")
+          [ -n "${GH_TOKEN:-}" ] || fail 'syncing develop needs GH_TOKEN'
+          [ -n "${GITHUB_REPOSITORY:-}" ] || fail 'syncing develop needs GITHUB_REPOSITORY'
+
+          git fetch --quiet origin main
+          main=$(git rev-parse --verify origin/main)
+          [ "$target" = "$main" ] ||
+            fail "releases are published from main; $target is not origin/main ($main)"
+
+          if draft=$(gh release view "$tag" --json isDraft -q .isDraft 2> "$RUNNER_TEMP/view-error"); then
+            case $draft in
+            true)
+              fail "draft release $tag exists; publish or delete it"
+              ;;
+            false)
+              printf 'krs: %s is already released\n' "$tag"
+              exit 0
+              ;;
+            *)
+              fail "gh release view $tag printed '$draft'"
+              ;;
+            esac
+          fi
+          grep -q 'release not found' "$RUNNER_TEMP/view-error" || fail "$(cat "$RUNNER_TEMP/view-error")"
+
+          assets=()
+          for asset in "$dist/krs-$tag-"*.tar.gz; do
+            [ -f "$asset" ] && [ -f "$asset.sha256" ] || fail "$dist holds no package for $tag"
+            assets+=("$asset" "$asset.sha256")
+          done
+          gh release create "$tag" "${assets[@]}" --target "$target" --title "krs $tag" \
+            --notes-file "$dist/notes.md" --latest
+          printf 'krs: released %s\n' "$tag"
+
+          # Fast-forward only: a rejected push means develop moved since the merge.
+          if git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "${target}:refs/heads/develop"; then
+            printf 'krs: develop now contains %s\n' "$tag"
+          else
+            printf '::warning::develop has moved since the merge; merge main into develop to bring in %s\n' "$tag"
+          fi
