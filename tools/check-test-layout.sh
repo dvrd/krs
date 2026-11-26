@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."
 
 # src files still waiting for unit tests; remove each as its
 # tests/unit/<x>_test.odin lands. Must end empty.
-pending="apply commands lookup plan resolve"
+pending=""
 
 status=0
 
