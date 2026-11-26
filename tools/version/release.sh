@@ -81,13 +81,23 @@ release_prepare() {
         dry_run=true
         shift
     fi
-    [ $# -eq 1 ] && [ -n "$1" ] && [ "$1" != / ] || usage
+    [ $# -eq 1 ] && [ -n "$1" ] || usage
     dist=$1
 
     head=$(git rev-parse --verify HEAD)
     if [ "$dry_run" = false ]; then
         guard_checkout 'commit your changes before releasing'
     fi
+
+    # Refuse a destination that is, or contains, the checkout before deleting it.
+    top=$(git rev-parse --show-toplevel)
+    mkdir -p "$dist"
+    dist=$(cd "$dist" && pwd -P)
+    top=$(cd "$top" && pwd -P)
+    case "$top/" in
+    "$dist"/*) fail "refusing to use $dist: it contains the checkout" ;;
+    esac
+    [ "$dist" != / ] || fail 'refusing to use /'
 
     rm -rf "$dist"
     mkdir -p "$dist"
@@ -102,7 +112,10 @@ release_prepare() {
 
     KRS_VERSION="$next" task check
     KRS_VERSION="$next" task build
-    reported=$("$out/krs" --version)
+    # Archive the copy that is version-checked, not the shared build path.
+    mkdir -p "$scratch/package"
+    cp "$out/krs" "$scratch/package/krs"
+    reported=$("$scratch/package/krs" --version)
     [ "$reported" = "krs $next" ] || fail "the release binary reports '$reported', not 'krs $next'"
     if [ "$dry_run" = false ]; then
         guard_checkout 'the checkout changed while building the release'
@@ -114,7 +127,7 @@ release_prepare() {
         arch=amd64
     fi
     asset="krs-$next-$os-$arch.tar.gz"
-    tar -czf "$dist/$asset" -C "$out" krs
+    tar -czf "$dist/$asset" -C "$scratch/package" krs
     (cd "$dist" && shasum -a 256 "$asset" > "$asset.sha256")
 
     printf '%s\n' "$head" > "$dist/target"
@@ -143,6 +156,11 @@ release_publish() {
         [ -n "${GH_TOKEN:-}" ] || fail '--sync-develop needs GH_TOKEN'
         [ -n "${GITHUB_REPOSITORY:-}" ] || fail '--sync-develop needs GITHUB_REPOSITORY'
     fi
+
+    git fetch --quiet origin main
+    main=$(git rev-parse --verify origin/main)
+    [ "$target" = "$main" ] ||
+        fail "releases are published from main; $target is not origin/main ($main)"
 
     if draft=$(gh release view "$tag" --json isDraft -q .isDraft 2> "$scratch/view-error"); then
         case $draft in

@@ -137,7 +137,8 @@ contain the latest release".
 
 `task release -- --dry-run` previews the release locally: the version, the
 notes and the packaged binary. `task release` publishes from a clean local
-`main` that is pushed, and needs `gh` to be logged in.
+`main` that is pushed, and needs `gh` to be logged in. It publishes only when
+`HEAD` is the current `origin/main`.
 
 When changing command behavior, check the CLI usage in
 [`src/commands.odin`](src/commands.odin) and the package resolution tests in
