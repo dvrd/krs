@@ -188,6 +188,7 @@ Update_Candidate :: struct {
 	name, source, current, chosen, installed: string,
 	group:       Update_Group,
 	pinned:      bool,
+	linked:      bool, // shared/ links to a checkout; -u moves only the project's record
 	chosen_time: i64, // Unix seconds; 0 when not loaded
 	held_by_cooldown: string, // the tag the target would pick without --cooldown, when it was too new; "" otherwise
 	held_time:   i64, // Unix seconds of held_by_cooldown; 0 when unknown
@@ -585,16 +586,22 @@ update_candidates :: proc(state: ^State, query: Update_Query) -> (candidates: [d
 	}
 
 	unavailable := 0
+	unchecked := make([dynamic]string, context.temp_allocator)
 	for entry in entries {
-		installed := ""
-		if record := manifest_find(&state.manifest, entry.name); record != nil {
-			if record.linked != "" {
-				continue
-			}
-			installed = record.tag
+		if !update_name_selected(query, entry.name) || !update_version_selected(query, entry.tag) {
+			continue
 		}
 
-		if !update_name_selected(query, entry.name) || !update_version_selected(query, entry.tag) {
+		installed := ""
+		linked := false
+		if record := manifest_find(&state.manifest, entry.name); record != nil {
+			linked = record.linked != ""
+			installed = "" if linked else record.tag
+		}
+
+		// The root's manifest records a link, not a release to move.
+		if linked && query.global {
+			append(&unchecked, entry.name)
 			continue
 		}
 
@@ -602,7 +609,7 @@ update_candidates :: proc(state: ^State, query: Update_Query) -> (candidates: [d
 			refresh_package_cache(state, entry.name, entry.source)
 		}
 
-		repository, found := repository_find(state, entry.name, "", entry.source)
+		repository, found := update_repository(state, entry.name, "", entry.source)
 		if !found {
 			warn(state.env, "cannot check %s: no usable repository", entry.name)
 			unavailable += 1
@@ -689,6 +696,7 @@ update_candidates :: proc(state: ^State, query: Update_Query) -> (candidates: [d
 			installed = installed,
 			group     = update_group(current, chosen_version),
 			pinned    = entry.pinned,
+			linked    = linked,
 			held_by_cooldown = held,
 			held_time = held_time,
 		}
@@ -696,6 +704,10 @@ update_candidates :: proc(state: ^State, query: Update_Query) -> (candidates: [d
 			candidate.chosen_time = repository.tag_times[chosen]
 		}
 		append(&candidates, candidate)
+	}
+
+	if len(unchecked) > 0 {
+		note(state.env, "linked, not checked: %s", strings.join(unchecked[:], ", ", context.temp_allocator))
 	}
 
 	if unavailable > 0 {
@@ -706,6 +718,23 @@ update_candidates :: proc(state: ^State, query: Update_Query) -> (candidates: [d
 		return a.name < b.name
 	})
 	return candidates, true
+}
+
+// The repository `krs update` reads a package's tags from: the source
+// directories and the GitHub cache first, then, for a linked package, the
+// checkout it is linked from, which need not be in a source directory.
+update_repository :: proc(state: ^State, name, tag, source: string) -> (repository: Repository, ok: bool) {
+	repository, ok = repository_find(state, name, tag, source)
+	if ok {
+		return repository, true
+	}
+
+	record := manifest_find(&state.manifest, name)
+	if record == nil || record.linked == "" || record.path == "" {
+		return {}, false
+	}
+
+	return repository_candidate(state, record.path, tag, source_identity(source))
 }
 
 UPDATE_GROUP_HEADERS :: [Update_Group]string {
@@ -856,16 +885,26 @@ update_print_row :: proc(env: ^Env, candidate: Update_Candidate, format: bit_set
 
 	name_padding := strings.repeat(" ", name_width - len(candidate.name), context.temp_allocator)
 	current_padding := strings.repeat(" ", current_width - len(candidate.current), context.temp_allocator)
+	linked := update_linked_label(env, candidate)
 	if candidate.pinned {
 		available := paint(env, ANSI_DIM, strings.concatenate({"(pinned; ", candidate.chosen, " available)"}, context.temp_allocator))
-		say(env, "  %s%v %v%v %v%v", candidate.name, name_padding, candidate.current, current_padding, available,
+		say(env, "  %s%v %v%v %v%v%v", candidate.name, name_padding, candidate.current, current_padding, available, linked,
 			Painted(strings.to_string(extra)))
 		return
 	}
 
 	colors := UPDATE_GROUP_COLORS
-	say(env, "  %s%v %v%v %v %v%v", candidate.name, name_padding, candidate.current, current_padding,
-		paint(env, ANSI_DIM, "->"), paint(env, colors[candidate.group], candidate.chosen), Painted(strings.to_string(extra)))
+	say(env, "  %s%v %v%v %v %v%v%v", candidate.name, name_padding, candidate.current, current_padding,
+		paint(env, ANSI_DIM, "->"), paint(env, colors[candidate.group], candidate.chosen), linked, Painted(strings.to_string(extra)))
+}
+
+// ` (linked)`, dimmed, after the tag of a linked candidate; "" otherwise.
+update_linked_label :: proc(env: ^Env, candidate: Update_Candidate) -> Painted {
+	if !candidate.linked {
+		return ""
+	}
+
+	return paint(env, ANSI_DIM, " (linked)")
 }
 
 // Prints one JSON document: the upgrades as {name: tag}, or the
@@ -895,7 +934,7 @@ update_print_json :: proc(state: ^State, all: []Update_Candidate, mode: Update_J
 
 			record := packages_find(&copied, candidate.name)
 			assert(record != nil)
-			repository, found := repository_find(state, candidate.name, candidate.chosen, candidate.source)
+			repository, found := update_repository(state, candidate.name, candidate.chosen, candidate.source)
 			if !found {
 				return fail(env, "no usable repository for %s %s", candidate.name, candidate.chosen)
 			}
@@ -946,10 +985,6 @@ command_update_upgrade :: proc(env: ^Env, options: Options, names: []string) -> 
 		record := manifest_find(&state.manifest, name)
 		if record == nil {
 			return fail(env, "%s was not installed by krs in %s", name, state.shared)
-		}
-
-		if record.linked != "" {
-			return fail(env, "%s is linked; run krs unlink %s first", name, name)
 		}
 
 		pin := packages_find(&state.packages, name)
@@ -1050,9 +1085,11 @@ command_update_upgrade :: proc(env: ^Env, options: Options, names: []string) -> 
 		return update_apply(state, candidates[:], options)
 	}
 
+	// A linked upgrade only moves this project's record; it changes nothing in
+	// shared/, so it alone does not move the project to vendor/.
 	planned := make([dynamic]Update_Candidate, context.temp_allocator)
 	for candidate in candidates {
-		if !candidate.pinned {
+		if !candidate.pinned && !candidate.linked {
 			append(&planned, candidate)
 		}
 	}
@@ -1063,7 +1100,7 @@ command_update_upgrade :: proc(env: ^Env, options: Options, names: []string) -> 
 		return update_apply(state, candidates[:], options)
 	}
 
-	update_announce(state, planned[:])
+	update_announce(state, candidates[:])
 	vendor := path_join(state.scope.project, VENDOR_DIR)
 	note(env, "%s is pinned at %s but %s holds another version; this project moves to %s", divergent.name, divergent.tag, state.shared, vendor)
 
@@ -1158,7 +1195,8 @@ update_choose_interactive :: proc(env: ^Env, candidates: []Update_Candidate, whi
 	for _ in 0 ..< len(offered) * 4 + 16 {
 		for candidate, index in offered {
 			mark := paint(env, ANSI_GREEN, "[x]") if selected[index] else paint(env, ANSI_DIM, "[ ]")
-			say(env, "  %v %2d  %s %s %v %s", mark, index + 1, candidate.name, candidate.current, paint(env, ANSI_DIM, "->"), candidate.chosen)
+			say(env, "  %v %2d  %s %s %v %s%v", mark, index + 1, candidate.name, candidate.current, paint(env, ANSI_DIM, "->"), candidate.chosen,
+				update_linked_label(env, candidate))
 		}
 
 		prompt(env, "%v ", paint(env, ANSI_DIM, "toggle numbers, a for all, Enter to apply, q to quit:"))
@@ -1219,7 +1257,8 @@ update_choose_interactive :: proc(env: ^Env, candidates: []Update_Candidate, whi
 }
 
 // Moves every unpinned candidate to its chosen release in one plan. Pinned
-// candidates are listed as held and never moved. Confirmation reads
+// candidates are listed as held and never moved. A linked candidate keeps its
+// link; only its record in .krs/packages.json moves. Confirmation reads
 // state.options.yes; callers must open the state with the same options.
 // With `announced`, the caller already printed the version changes.
 update_apply :: proc(state: ^State, candidates: []Update_Candidate, options: Options, announced := false) -> bool {
@@ -1228,6 +1267,7 @@ update_apply :: proc(state: ^State, candidates: []Update_Candidate, options: Opt
 	}
 
 	queued := 0
+	linked := 0
 	for candidate in candidates {
 		if candidate.pinned {
 			info(state.env, "%s is pinned at %s; %s is available", candidate.name, candidate.current, candidate.chosen)
@@ -1238,6 +1278,17 @@ update_apply :: proc(state: ^State, candidates: []Update_Candidate, options: Opt
 			say_version_change(state.env, candidate.name, candidate.current, candidate.chosen, update_compatibility(candidate))
 		}
 		update_report_dependants(state, candidate.name, candidate.chosen)
+
+		// After a move to vendor/, a package linked in the root is an ordinary
+		// vendored package, so the manifest decides, not the candidate.
+		installed := manifest_find(&state.manifest, candidate.name)
+		if installed != nil && installed.linked != "" {
+			assert(candidate.linked)
+			update_linked_record(state, candidate, options.update.pin) or_return
+			linked += 1
+			continue
+		}
+
 		append(
 			&state.queue,
 			Request {
@@ -1256,11 +1307,16 @@ update_apply :: proc(state: ^State, candidates: []Update_Candidate, options: Opt
 		queued += 1
 	}
 
-	if queued == 0 {
+	if queued + linked == 0 {
 		success(state.env, "every package of this project is at its target version")
 		return true
 	}
 
+	if queued == 0 {
+		return update_linked_write(state)
+	}
+
+	// plan_packages copies the moved linked records from state.packages.
 	plan_discover(state) or_return
 	plan_drain(state) or_return
 	if options.update.install == .Never {
@@ -1274,4 +1330,62 @@ update_apply :: proc(state: ^State, candidates: []Update_Candidate, options: Opt
 	}
 
 	return plan_apply(state)
+}
+
+// Moves a linked package's record in .krs/packages.json to the chosen tag,
+// with the commit and hash of that release in the checkout's repository.
+// Nothing in shared/ changes: the project still builds against the link,
+// and `krs unlink --restore` installs the recorded release.
+update_linked_record :: proc(state: ^State, candidate: Update_Candidate, pin: bool) -> bool {
+	assert(candidate.linked)
+	assert(!candidate.pinned)
+	installed := manifest_find(&state.manifest, candidate.name)
+	assert(installed != nil)
+	assert(installed.linked != "")
+	record := packages_find(&state.packages, candidate.name)
+	assert(record != nil)
+
+	repository, found := update_repository(state, candidate.name, candidate.chosen, record.source)
+	if !found {
+		return fail(state.env, "no usable repository for %s %s", candidate.name, candidate.chosen)
+	}
+
+	commit := repository_tag_commit(state.env, repository.path, candidate.name, candidate.chosen, "") or_return
+	decision := Decision {
+		name       = candidate.name,
+		tag        = candidate.chosen,
+		commit     = commit,
+		repository = repository.path,
+		source     = record.source,
+	}
+	decision_prepare(state, &decision) or_return
+	assert(decision.hash != "")
+
+	record.tag = candidate.chosen
+	record.commit = commit
+	record.hash = decision.hash
+	if pin {
+		record.pinned = true
+	}
+	note(state.env, "%s stays linked to %s; %s now records %s", candidate.name, installed.linked, PACKAGES_PATH, candidate.chosen)
+	return true
+}
+
+// Writes .krs/packages.json when only linked packages moved. plan_apply and
+// plan_record_only compare their records with state.packages, which already
+// holds the moved records, so they would write nothing; with nothing to
+// change in shared/, they have no other work to do either.
+update_linked_write :: proc(state: ^State) -> bool {
+	assert(len(state.packages.packages) > 0)
+	// update -u may have added a record for a named package.
+	slice.sort_by(state.packages.packages[:], proc(a, b: Package_Record) -> bool {
+		return a.name < b.name
+	})
+
+	transaction := Transaction{env = state.env, scope = state.scope}
+	defer transaction_close(&transaction)
+	stage_packages(&transaction, path_join(state.scope.project, PACKAGES_PATH), state.packages) or_return
+	transaction_commit(&transaction) or_return
+	success(state.env, "%s records the new versions; linked packages keep their links", PACKAGES_PATH)
+	return true
 }

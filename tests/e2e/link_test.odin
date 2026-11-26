@@ -90,7 +90,12 @@ link_and_unlink :: proc(t: ^testing.T) {
 	testing.expect(t, krs.is_symbolic_link(link), "install leaves a linked package alone")
 	testing.expect_value(t, fixtures.packages_text(&fixture), recorded)
 	fixtures.expect_failure(&fixture, fixtures.run(&fixture, "", "install", "--frozen"), "alpha is linked")
-	fixtures.expect_failure(&fixture, fixtures.run(&fixture, "", "update", "alpha", "-u", "--yes"), "alpha is linked")
+	// update checks a linked package too; with no newer tag nothing moves.
+	updated := fixtures.run(&fixture, "", "update", "alpha", "-u", "--yes")
+	fixtures.expect_ok(&fixture, updated)
+	fixtures.expect_contains(&fixture, updated.out, "at its target version")
+	testing.expect(t, krs.is_symbolic_link(link), "update leaves a linked package linked")
+	testing.expect_value(t, fixtures.packages_text(&fixture), recorded)
 
 	misplaced := fixtures.run(&fixture, "", "install", "--restore")
 	testing.expect_value(t, misplaced.code, krs.EXIT_USAGE)

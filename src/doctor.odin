@@ -293,7 +293,7 @@ doctor_recovery :: proc(snapshot: Packages_File, linked: []string, project, root
 	fmt.sbprintf(&builder, "cd %s && krs update -u --yes --root=%s", shell_quote(project), shell_quote(root))
 	named := 0
 	for record in snapshot.packages {
-		// update -u never moves a pinned package and refuses a linked one.
+		// update -u never moves a pinned package, and --doctor leaves linked ones out.
 		if record.pinned || slice.contains(linked, record.name) {
 			continue
 		}
@@ -366,6 +366,12 @@ command_update_doctor :: proc(env: ^Env, options: Options, names: []string) -> b
 	candidates := make([dynamic]Update_Candidate, context.temp_allocator)
 	for candidate in found {
 		if candidate.pinned || !candidate_upgrades(candidate) {
+			continue
+		}
+
+		// A trial installs the release, which would replace the link.
+		if candidate.linked {
+			note(env, "%s is linked; --doctor leaves it out", candidate.name)
 			continue
 		}
 
