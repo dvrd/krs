@@ -9,46 +9,11 @@ jobs:
   check:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
 
-      - run: brew install libgit2 sqlite pkg-config go-task llvm@22
-
-      - name: Cache Odin
-        id: odin
-        uses: actions/cache@v4
-        with:
-          path: |
-            ${{ runner.temp }}/Odin
-            !${{ runner.temp }}/Odin/shared/kakunou
-          key: odin-${{ hashFiles('ODIN_VERSION') }}
-
-      - name: Build Odin
-        if: steps.odin.outputs.cache-hit != 'true'
-        run: |
-          sha=$(cut -d: -f2 ODIN_VERSION)
-          git clone https://github.com/dvrd/Odin.git "$RUNNER_TEMP/Odin"
-          cd "$RUNNER_TEMP/Odin"
-          git checkout --detach "$sha"
-          ./build_odin.sh release
-
-      - name: Add Odin to PATH
-        run: echo "$RUNNER_TEMP/Odin" >> "$GITHUB_PATH"
-
-      - name: Install pinned kakunou
-        run: |
-          tag=$(jq -er '.packages[] | select(.name == "kakunou").tag' .krs/packages.json)
-          source=$(jq -er '.packages[] | select(.name == "kakunou").source' .krs/packages.json)
-          git clone --branch "$tag" --depth 1 "$source" "$RUNNER_TEMP/kakunou"
-          dest="$(odin root)shared/kakunou"
-          mkdir -p "$dest"
-          cp -R "$RUNNER_TEMP/kakunou/src/." "$dest/"
-
-      - name: Configure Git for test fixtures
-        run: |
-          git config --global user.email ci@example.invalid
-          git config --global user.name CI
+      - uses: ./.github/actions/setup
 
       - run: KRS_STRICT_TOOLCHAIN=1 task check
         env:

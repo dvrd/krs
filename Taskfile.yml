@@ -65,8 +65,8 @@ tasks:
             ;;
         esac
 
+  # Called by the release workflow; no desc keeps it out of `task --list`.
   version:tool:
-    internal: true
     cmds:
       - task: odin
         vars: {ACTION: build, PACKAGE: tools/version, BINARY: krs-version, OPT: none, QUIET: 'true'}

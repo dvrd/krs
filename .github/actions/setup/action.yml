@@ -1,0 +1,53 @@
+name: Set up KRS
+description: Install the KRS build dependencies, the pinned Odin compiler and kakunou
+
+inputs:
+  cache:
+    description: 'Use the cached Odin build'
+    default: 'true'
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: brew install libgit2 sqlite pkg-config go-task llvm@22
+
+    - name: Cache Odin
+      id: odin
+      if: inputs.cache == 'true'
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: |
+          ${{ runner.temp }}/Odin
+          !${{ runner.temp }}/Odin/shared/kakunou
+        key: odin-${{ hashFiles('ODIN_VERSION') }}
+
+    - name: Build Odin
+      if: inputs.cache != 'true' || steps.odin.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        sha=$(cut -d: -f2 ODIN_VERSION)
+        git clone https://github.com/dvrd/Odin.git "$RUNNER_TEMP/Odin"
+        cd "$RUNNER_TEMP/Odin"
+        git checkout --detach "$sha"
+        ./build_odin.sh release
+
+    - name: Add Odin to PATH
+      shell: bash
+      run: echo "$RUNNER_TEMP/Odin" >> "$GITHUB_PATH"
+
+    - name: Install pinned kakunou
+      shell: bash
+      run: |
+        tag=$(jq -er '.packages[] | select(.name == "kakunou").tag' .krs/packages.json)
+        source=$(jq -er '.packages[] | select(.name == "kakunou").source' .krs/packages.json)
+        git clone --branch "$tag" --depth 1 "$source" "$RUNNER_TEMP/kakunou"
+        dest="$(odin root)shared/kakunou"
+        mkdir -p "$dest"
+        cp -R "$RUNNER_TEMP/kakunou/src/." "$dest/"
+
+    - name: Configure Git for test fixtures
+      shell: bash
+      run: |
+        git config --global user.email ci@example.invalid
+        git config --global user.name CI
