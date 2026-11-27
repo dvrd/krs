@@ -6,6 +6,7 @@ import "core:testing"
 
 @(test)
 fingerprint_round_trips_and_names_changes :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
 	previous := make(Fingerprint)
 	previous["version"] = "v0.2.3"
 	previous["src/a.odin"] = "aa"
@@ -28,6 +29,7 @@ fingerprint_round_trips_and_names_changes :: proc(t: ^testing.T) {
 
 @(test)
 fingerprint_directory_covers_nested_files :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
 	temporary, _ := os.temp_directory(context.temp_allocator)
 	base, err := os.make_directory_temp(temporary, "krs-dev-*", context.temp_allocator)
 	testing.expect(t, err == nil)
@@ -52,4 +54,12 @@ fingerprint_directory_covers_nested_files :: proc(t: ^testing.T) {
 
 	missing := make(Fingerprint)
 	testing.expect(t, !fingerprint_directory(&missing, fmt.tprintf("%s/absent", base), "pkg", &count))
+}
+
+@(test)
+build_mode_labels_fit_the_step_column :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	for settings in BUILD_MODES {
+		testing.expectf(t, len(settings.label) <= STEP_LABEL_WIDTH, "%q is longer than %d", settings.label, STEP_LABEL_WIDTH)
+	}
 }

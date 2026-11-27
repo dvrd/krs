@@ -12,7 +12,22 @@ import "core:time"
 // version). Every file counts, so #load-ed files do too.
 BUILD_SOURCES :: [?]string{"cmd/krs", "src"}
 BUILD_SHARED :: [?]string{"kakunou"}
-BUILD_FLAGS :: "-vet -o:speed"
+
+Build_Mode :: enum {
+	Debug,
+	Release,
+}
+
+Build_Settings :: struct {
+	name:  string, // the directory under KRS_CHECK_DIR
+	label: string,
+	flags: []string,
+}
+
+BUILD_MODES := [Build_Mode]Build_Settings {
+	.Debug   = {"debug", "Compiling for debug (-o:none)", {"-debug", "-o:none"}},
+	.Release = {"release", "Compiling with LLVM (-o:speed)", {"-o:speed"}},
+}
 FINGERPRINT_FILES_MAX :: 10_000
 CHANGES_NAMED_MAX :: 3
 
@@ -20,12 +35,12 @@ CHANGES_NAMED_MAX :: 3
 // ("odin", "version", "flags") and its value.
 Fingerprint :: map[string]string
 
-// `krs-dev build`: builds $KRS_CHECK_DIR/krs, or nothing when the inputs are
-// those of the binary already there.
-build_command :: proc() -> int {
+// `krs-dev build debug|release`: builds $KRS_CHECK_DIR/<mode>/krs, or
+// nothing when the inputs are those of the binary already there.
+build_command :: proc(mode: Build_Mode) -> int {
 	started := time.tick_now()
 	display := display_make()
-	build, code := build_begin(display)
+	build, code := build_begin(display, mode)
 	if code != EXIT_OK {
 		return code
 	}
@@ -35,7 +50,7 @@ build_command :: proc() -> int {
 		return code
 	}
 
-	binary := fmt.tprintf("%s/krs", build.out)
+	binary := fmt.tprintf("%s/krs", build.dir)
 	icon(display, 32, "✓", false)
 	if build.skipped {
 		fmt.printfln("krs: %s is up to date (%s)", binary, build.version)
@@ -47,15 +62,17 @@ build_command :: proc() -> int {
 
 // build_begin finds the output directory and catches SIGINT and SIGTERM, which
 // the steps check between commands.
-build_begin :: proc(display: Display) -> (build: Build, code: int) {
+build_begin :: proc(display: Display, mode: Build_Mode) -> (build: Build, code: int) {
 	build.out = os.get_env("KRS_CHECK_DIR", context.allocator)
 	if build.out == "" {
 		tmp := os.get_env("TMPDIR", context.allocator)
 		build.out = fmt.tprintf("%s/krs-check", strings.trim_right(tmp, "/") if tmp != "" else "/tmp")
 	}
 
-	if !ensure_dir(build.out) {
-		return build, install_fail(display, fmt.tprintf("cannot create %s", build.out))
+	build.mode = mode
+	build.dir = fmt.tprintf("%s/%s", build.out, BUILD_MODES[mode].name)
+	if !ensure_dir(build.dir) {
+		return build, install_fail(display, fmt.tprintf("cannot create %s", build.dir))
 	}
 
 	handler: posix.sigaction_t
@@ -64,7 +81,7 @@ build_begin :: proc(display: Display) -> (build: Build, code: int) {
 	posix.sigaction(.SIGINT, &handler, nil)
 	posix.sigaction(.SIGTERM, &handler, nil)
 
-	build.log_path = fmt.tprintf("%s/krs-build.log", build.out)
+	build.log_path = fmt.tprintf("%s/build.log", build.dir)
 	return build, EXIT_OK
 }
 
@@ -75,8 +92,8 @@ build_krs :: proc(display: Display, build: ^Build) -> int {
 		return code
 	}
 
-	binary := fmt.tprintf("%s/krs", build.out)
-	record := fmt.tprintf("%s/krs.inputs", build.out)
+	binary := fmt.tprintf("%s/krs", build.dir)
+	record := fmt.tprintf("%s/krs.inputs", build.dir)
 	step := step_begin(display, "Looking for changes")
 	current, hashed := fingerprint_make(build^)
 	if !hashed {
@@ -111,7 +128,8 @@ fingerprint_make :: proc(build: Build) -> (fingerprint: Fingerprint, ok: bool) {
 	fingerprint = make(Fingerprint)
 	fingerprint["odin"] = build.odin_version
 	fingerprint["version"] = build.version
-	fingerprint["flags"] = strings.join({BUILD_FLAGS, build.link_flags}, " ")
+	flags := strings.join(BUILD_MODES[build.mode].flags, " ", context.temp_allocator)
+	fingerprint["flags"] = strings.join({"-vet", flags, build.link_flags}, " ", context.temp_allocator)
 	count := 0
 	for directory in BUILD_SOURCES {
 		fingerprint_directory(&fingerprint, directory, directory, &count) or_return

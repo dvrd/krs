@@ -24,9 +24,17 @@ Task warns if the running compiler differs. Set `KRS_STRICT_TOOLCHAIN=1`
 to make a mismatch fail the build.
 
 - `task` or `task check` builds KRS and runs the suite.
-- `task build` builds the CLI with `-o:speed` and prints its path. It records what the binary was built from (the files of `cmd/krs`, `src` and `shared:kakunou`, the compiler, the version and the flags) and does nothing when none of it changed; it names what changed otherwise.
+- `task build` builds a debug CLI (`-debug -o:none`) in `debug/` under the output directory and prints its path.
+- `task release` builds the optimized CLI (`-o:speed`) in `release/` and prints its path.
 - `task test` builds the tests with `-o:none` and runs them.
-- `task install` builds the same optimized CLI, skipping the compile when nothing changed, and installs it as `~/.local/bin/krs`. It prints each step as it finishes: the compiler and libgit2 it found, the version, type-checking, the optimized compile with the compiler's timings, and the copy.
+- `task install` installs the optimized CLI from `task release` as `~/.local/bin/krs`, building it first when needed.
+
+`task build`, `task release` and `task install` print each step as it
+finishes: the compiler and libgit2 found, the version, the inputs that changed,
+type-checking, and the compile with the compiler's timings. Each records what
+its binary was built from (the files of `cmd/krs`, `src` and `shared:kakunou`,
+the compiler, the version and the flags) and does not compile again when none
+of it changed.
 
 Set `KRS_CHECK_DIR` to choose the output directory. The default is
 `${TMPDIR:-/tmp}/krs-check`.
@@ -51,7 +59,7 @@ libraries and the GitHub libraries you want KRS to fetch automatically.
 ```
 
 Run the binary from the Odin project that imports those libraries. Use the path
-printed by `task build` if `krs` is outside your `PATH`.
+printed by `task release` if `krs` is outside your `PATH`.
 
 `krs help` lists the commands. `krs update help` (or `krs help update`, or
 `--help` with the command) shows one command's usage and options. `help` is
@@ -141,8 +149,9 @@ by hand: `git fetch --tags && git switch develop && git merge origin/main && git
 Until then, `task version:next` on `develop` fails with "this branch must
 contain the latest release".
 
-`task release` previews the release locally: the version, the notes and the
-packaged binary. Nothing is published; releases are published only by the
+`task release:preview` previews the release locally: the version, the
+release notes, and the tested, packaged binary in `preview/` under the output
+directory. Nothing is published; releases are published only by the
 release workflow when `develop` is merged into `main`.
 
 Tests live in `tests/unit/` (one `<x>_test.odin` per `src/<x>.odin`, calling

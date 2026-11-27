@@ -46,6 +46,8 @@ Build :: struct {
 	log_path:     string,
 	odin_version: string,
 	odin_root:    string,
+	mode:         Build_Mode,
+	dir:          string, // where this mode's binary and its inputs live
 	skipped:      bool, // nothing changed since the last build
 }
 
@@ -92,7 +94,7 @@ install :: proc() -> int {
 		return install_fail(display, fmt.tprintf("cannot replace directory %s", destination))
 	}
 
-	build, code := build_begin(display)
+	build, code := build_begin(display, .Release)
 	if code != EXIT_OK {
 		return code
 	}
@@ -189,13 +191,14 @@ compile :: proc(display: Display, build: Build) -> int {
 	}
 	step_done(display, check, timings_summary(output, {"parse files", "type check"}))
 
-	binary := fmt.tprintf("%s/krs", build.out)
-	optimize := step_begin(display, "Compiling with LLVM (-o:speed)")
-	command := []string {
-		"odin", "build", "cmd/krs", fmt.tprintf("-out:%s", binary), "-vet", "-o:speed", "-show-timings",
-		fmt.tprintf("-define:KRS_VERSION=%s", build.version), fmt.tprintf("-extra-linker-flags:%s", build.link_flags),
-	}
-	output, code = step_command(display, optimize, command, build.log_path)
+	binary := fmt.tprintf("%s/krs", build.dir)
+	settings := BUILD_MODES[build.mode]
+	optimize := step_begin(display, settings.label)
+	command: [dynamic]string
+	append(&command, "odin", "build", "cmd/krs", fmt.tprintf("-out:%s", binary), "-vet", "-show-timings")
+	append(&command, ..settings.flags)
+	append(&command, fmt.tprintf("-define:KRS_VERSION=%s", build.version), fmt.tprintf("-extra-linker-flags:%s", build.link_flags))
+	output, code = step_command(display, optimize, command[:], build.log_path)
 	if signal_code, stopped := interrupted(); stopped {
 		step_clear(display)
 		return signal_code
@@ -224,7 +227,7 @@ place :: proc(display: Display, build: Build, bin_dir, destination: string) -> i
 
 	staged := fmt.tprintf("%s/.krs.%d", bin_dir, os.get_pid())
 	defer os.remove(staged)
-	if err := os.copy_file(staged, fmt.tprintf("%s/krs", build.out)); err != nil {
+	if err := os.copy_file(staged, fmt.tprintf("%s/krs", build.dir)); err != nil {
 		step_failed(display, step, "")
 		return install_fail(display, fmt.tprintf("cannot stage %s", destination))
 	}
@@ -343,7 +346,17 @@ timings_summary :: proc(output: string, phases: []string) -> string {
 	for phase in phases {
 		for line in strings.split_lines(output, context.temp_allocator) {
 			fields := strings.split(line, " - ", context.temp_allocator)
-			if len(fields) != 3 || strings.trim_space(fields[0]) != phase {
+			if len(fields) != 3 {
+				continue
+			}
+
+			// A debug build adds a count: "LLVM API Code Gen (  131 modules )".
+			name := strings.trim_space(fields[0])
+			if open := strings.index(name, " ("); open > 0 {
+				name = strings.trim_space(name[:open])
+			}
+
+			if name != phase {
 				continue
 			}
 
