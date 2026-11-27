@@ -63,6 +63,13 @@ cli_help_prints_usage :: proc(t: ^testing.T) {
 		fixtures.expect_contains(&fixture, result.out, "--doctor-timeout <d>")
 	}
 
+	// --color works with help like with any command, before or after it.
+	for arguments in ([][]string{{"--color", "help"}, {"update", "--color", "--help"}, {"help", "--color", "update"}}) {
+		result := fixtures.run(&fixture, "", ..arguments)
+		testing.expectf(t, result.code == krs.EXIT_OK, "%v: exit %d\nerr: %s", arguments, result.code, result.err)
+		testing.expectf(t, strings.contains(result.out, krs.ANSI_VALUE + "usage:" + krs.ANSI_RESET), "%v is colored: %q", arguments, result.out)
+	}
+
 	// A help request never runs the command.
 	link := fixtures.run(&fixture, "", "link", "help")
 	fixtures.expect_ok(&fixture, link)

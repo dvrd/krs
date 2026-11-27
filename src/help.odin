@@ -124,8 +124,9 @@ options:
 HELP_VENDOR :: `%[0]susage:%[1]s krs vendor [--root=<path>] [--yes]
 
 Copies every dependency, at this project's versions, into vendor/; every
-later krs command for this project uses it. Build with
-odin build . -collection:shared=vendor.
+later krs command for this project uses it. Build with:
+
+  odin build . -collection:shared=vendor
 
 options:
   %[0]s--root=<path>%[1]s  work on the shared/ of the Odin root at <path>
