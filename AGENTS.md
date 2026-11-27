@@ -53,6 +53,11 @@ libraries and the GitHub libraries you want KRS to fetch automatically.
 Run the binary from the Odin project that imports those libraries. Use the path
 printed by `task build` if `krs` is outside your `PATH`.
 
+`krs help` lists the commands. `krs update help` (or `krs help update`, or
+`--help` with the command) shows one command's usage and options. `help` is
+reserved right after a command name, so `krs update help` does not check a
+package named `help`.
+
 Set `KRS_NO_ANIMATION=1` to keep terminal colors with static output. Set
 `NO_COLOR=1` to turn off colors and animations in `krs` and `task install`.
 
@@ -144,5 +149,5 @@ Tests live in `tests/unit/` (one `<x>_test.odin` per `src/<x>.odin`, calling
 its procedures directly), `tests/e2e/` (whole commands through the harness, one
 file per command area) and `tests/fixtures/` (the harness). `task test` checks
 the mapping with `krs-dev test-layout` (`tools/dev`). When changing command behavior,
-check the CLI usage in [`src/commands.odin`](src/commands.odin) and the
+check the command's help in [`src/help.odin`](src/help.odin) and the
 matching file in `tests/e2e/`.

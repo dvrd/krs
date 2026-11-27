@@ -8,26 +8,6 @@ import krs "../../src"
 import "../fixtures"
 
 @(test)
-print_usage_colors_only_when_asked :: proc(t: ^testing.T) {
-	context.allocator = context.temp_allocator
-
-	plain := strings.builder_make()
-	krs.print_usage(strings.to_writer(&plain), false)
-	text := strings.to_string(plain)
-	testing.expect(t, strings.has_prefix(text, "usage:\n"))
-	testing.expect(t, strings.contains(text, "  krs install [--root=<path>]"))
-	testing.expect(t, !strings.contains(text, "\x1b"))
-	testing.expect(t, !strings.contains(text, "%!"), "every verb has an argument")
-
-	colored := strings.builder_make()
-	krs.print_usage(strings.to_writer(&colored), true)
-	painted := strings.to_string(colored)
-	testing.expect(t, strings.has_prefix(painted, krs.ANSI_VALUE + "usage:" + krs.ANSI_RESET))
-	testing.expect(t, strings.contains(painted, "krs " + krs.ANSI_VALUE + "install" + krs.ANSI_RESET))
-	testing.expect(t, !strings.contains(painted, "%!"))
-}
-
-@(test)
 link_state_tells_each_kind_of_link_apart :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	fixture := fixtures.fixture_make(t)

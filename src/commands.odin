@@ -1,87 +1,10 @@
 package krs
 
 import "core:fmt"
-import "core:io"
 import "core:os"
 import "core:slice"
 import "core:strconv"
 import "core:strings"
-
-USAGE_FORMAT :: `%[0]susage:%[1]s
-  krs %[0]sinstall%[1]s [--root=<path>] [--frozen] [--repair] [--yes]
-      install the releases this project imports
-  krs %[0]sstatus%[1]s [--root=<path>]
-      list what the Odin root holds for this project
-  krs %[0]supdate%[1]s [<package>[@<tag>]...] [--cooldown=<period>] [--deep] [--package-file=<p>] [options]
-      list newer releases; filter with names, -f, -x
-  krs %[0]supdate -u%[1]s [<package>[@<tag>]...] [--cooldown=<period>] [--deep] [--package-file=<p>] [options]
-      write the chosen versions to .krs/packages.json and install them
-  krs %[0]supdate -u --doctor%[1]s [--doctor-test=<cmd>] [--doctor-install=<cmd>] [--doctor-timeout=<d>] [options]
-      upgrade, run the tests and keep only the upgrades that pass
-  krs %[0]supdate -i%[1]s [<package>...] [--interactive-select=<which>] [--root=<path>]
-      choose which upgrades to take, then apply them
-  krs %[0]sfetch%[1]s
-      refresh the GitHub releases of the configured libraries
-  krs %[0]sfetch%[1]s <owner>/<repo>
-      select or refresh the releases of one GitHub repository
-  krs %[0]slink%[1]s <package> [--root=<path>] [--yes]
-      use a checkout's live src/ in place of a release
-  krs %[0]slink ls%[1]s [--root=<path>]
-      list the links and flag broken ones
-  krs %[0]spin%[1]s <package> [--root=<path>]
-      hold a package at the release this project records
-  krs %[0]sunpin%[1]s <package> [--root=<path>]
-      let a pinned package be upgraded again
-  krs %[0]svendor%[1]s [--root=<path>] [--yes]
-      copy this project's dependencies into vendor/ and use them
-  krs %[0]sunlink%[1]s <package> [--root=<path>] [--restore] [--yes]
-      remove a link; with --restore, install the recorded release
-  krs %[0]suninstall%[1]s [<package>...] [--root=<path>] [--yes]
-      remove packages; with no names, choose them from a fuzzy list
-  krs %[0]srecover%[1]s
-      list interrupted file publications
-  krs %[0]srecover abandon%[1]s <id> [--yes]
-      give up on one interrupted publication
-  krs %[0]s--version%[1]s
-      print the version
-  krs %[0]s--help%[1]s
-      print this text
-
-  %[0]s--root=<path>%[1]s  work on the shared/ of the Odin root at <path>
-  %[0]s--frozen%[1]s       install exactly what .krs/packages.json says, or fail
-  %[0]s--repair%[1]s       reinstall packages whose installed files were changed
-  %[0]s--restore%[1]s      after unlink, install the recorded release in its place
-  %[0]s--fetch%[1]s        before checking, refresh the GitHub releases of the packages
-  %[0]s--yes%[1]s          do not ask before writing
-
-  update options:
-  %[0]s-u, --upgrade%[1]s           write .krs/packages.json and install
-  %[0]s--install%[1]s <m>           always, never (lockfile only) or prompt
-  %[0]s--pin%[1]s                   with -u: pin every chosen version
-  %[0]s-i, --interactive%[1]s       choose upgrades before applying them
-  %[0]s--interactive-select%[1]s    auto, none, patch, minor or all: what starts selected
-  %[0]s-c, --cooldown%[1]s <p>      ignore releases younger than this (7, 7d, 12h, 30m)
-  %[0]s-d, --doctor%[1]s            after upgrading, run the tests; keep only upgrades that pass
-  %[0]s--doctor-test%[1]s <cmd>     test command for --doctor (default: odin test .)
-  %[0]s--doctor-install%[1]s <cmd>  command run after each install for --doctor (default: none)
-  %[0]s--doctor-timeout%[1]s <d>    stop a --doctor command after 30s, 10m, 2h... (default: 30m)
-  %[0]s-t, --target%[1]s <t>        latest, greatest, newest, minor, patch or semver
-  %[0]s-f, --filter%[1]s <p>        only names matching p (name, a,b, glob*, /regex/, !name)
-  %[0]s-x, --reject%[1]s <p>        skip names matching p
-  %[0]s--filter-version%[1]s <p>    only current versions matching p
-  %[0]s--reject-version%[1]s <p>    skip current versions matching p
-  %[0]s--format%[1]s <v,...>        group, lines, time, repo, diff, installed-version, cooldown; no-<v> removes
-  %[0]s-j, --json-all%[1]s          print the new .krs/packages.json as JSON
-  %[0]s--json-upgraded%[1]s         print the upgrades as JSON
-  %[0]s--json-deps%[1]s             print the new package list as JSON
-  %[0]s-e, --error-level%[1]s <n>   2: exit 1 when upgrades are available
-  %[0]s-g, --global%[1]s            check every package of the Odin root
-  %[0]s--deep%[1]s                  check every project under this directory
-  %[0]s--package-file%[1]s <p>      check the projects whose lockfile matches p (repeatable)
-  %[0]s--color%[1]s                 force colors
-  %[0]s-s, --silent%[1]s            print nothing; use the exit code
-  %[0]s-l, --loglevel%[1]s <l>      silent, error, minimal, warn, info or verbose
-`
 
 EXIT_OK :: 0
 EXIT_FAILED :: 1
@@ -91,14 +14,6 @@ EXIT_USAGE :: 2
 // releases. "dev" when built without Task.
 KRS_VERSION :: #config(KRS_VERSION, "dev")
 
-print_usage :: proc(output: io.Writer, colored: bool) {
-	if colored {
-		fmt.wprintf(output, USAGE_FORMAT, ANSI_VALUE, ANSI_RESET)
-	} else {
-		fmt.wprintf(output, USAGE_FORMAT, "", "")
-	}
-}
-
 // Runs one krs command. `arguments` excludes the program name.
 run :: proc(env: ^Env, arguments: []string) -> int {
 	if len(arguments) == 1 && arguments[0] == "--version" {
@@ -106,9 +21,8 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 		return EXIT_OK
 	}
 
-	if len(arguments) == 1 && arguments[0] == "--help" {
-		print_usage(env.out, env.style.stdout && env.style.color)
-		return EXIT_OK
+	if topic, asked := help_request(arguments); asked {
+		return help_run(env, topic)
 	}
 
 	options: Options
@@ -472,7 +386,7 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 	}
 
 	if len(words) == 0 {
-		print_usage(env.err, env.style.stderr && env.style.color)
+		print_misuse(env, "")
 		return EXIT_USAGE
 	}
 
@@ -525,7 +439,7 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 		}
 		ok = command_recover_abandon(env, options, id)
 	case:
-		print_usage(env.err, env.style.stderr && env.style.color)
+		print_misuse(env, words[0])
 		return EXIT_USAGE
 	}
 
