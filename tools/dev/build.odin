@@ -1,5 +1,6 @@
 package main
 
+import "core:c"
 import "core:crypto/hash"
 import "core:fmt"
 import "core:os"
@@ -30,6 +31,15 @@ BUILD_MODES := [Build_Mode]Build_Settings {
 }
 FINGERPRINT_FILES_MAX :: 10_000
 CHANGES_NAMED_MAX :: 3
+
+foreign import libc "system:c"
+
+foreign libc {
+	flock :: proc "c" (fd, operation: c.int) -> c.int ---
+}
+
+LOCK_EX :: 2
+LOCK_NB :: 4
 
 // One entry per input: a file's path and its SHA-256, or a setting
 // ("odin", "version", "flags") and its value.
@@ -80,6 +90,21 @@ build_begin :: proc(display: Display, mode: Build_Mode) -> (build: Build, code: 
 	posix.sigemptyset(&handler.sa_mask)
 	posix.sigaction(.SIGINT, &handler, nil)
 	posix.sigaction(.SIGTERM, &handler, nil)
+
+	// Held until the process exits: from the record read through the compile,
+	// the record write and install's copy, so builds of one mode do not mix
+	// one's binary with another's record.
+	lock, lock_err := os.open(build.dir)
+	if lock_err != nil {
+		return build, install_fail(display, fmt.tprintf("cannot open %s", build.dir))
+	}
+
+	if flock(c.int(os.fd(lock)), LOCK_EX | LOCK_NB) != 0 {
+		fmt.eprintfln("krs: waiting for another build in %s", build.dir)
+		if flock(c.int(os.fd(lock)), LOCK_EX) != 0 {
+			return build, install_fail(display, fmt.tprintf("cannot lock %s", build.dir))
+		}
+	}
 
 	build.log_path = fmt.tprintf("%s/build.log", build.dir)
 	return build, EXIT_OK
