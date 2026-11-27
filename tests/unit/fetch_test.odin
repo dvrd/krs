@@ -120,6 +120,21 @@ package_github_uses_the_lib_or_an_existing_cache :: proc(t: ^testing.T) {
 
 	_, from_github, _ = krs.package_github(&env, config, "local", "/src/local")
 	testing.expect(t, !from_github)
+
+	// Not recorded and not configured: the one cached repository of that
+	// name, as install would choose it; two owners make it ambiguous.
+	_, from_github, _ = krs.package_github(&env, config, "saba", "")
+	testing.expect(t, !from_github)
+
+	os.make_directory_all(krs.github_cache_path(&env, krs.GitHub_Repository{owner = "dvrd", name = "saba"}))
+	github, from_github, valid = krs.package_github(&env, config, "saba", "")
+	testing.expect(t, from_github && valid)
+	testing.expect_value(t, krs.github_locator(github), "dvrd/saba")
+
+	os.make_directory_all(krs.github_cache_path(&env, krs.GitHub_Repository{owner = "other", name = "saba"}))
+	_, from_github, valid = krs.package_github(&env, config, "saba", "")
+	testing.expect(t, from_github && !valid)
+	testing.expect(t, strings.contains(strings.to_string(out), "more than one cached GitHub repository matches saba"))
 }
 
 // An empty bare repository in the fixture, opened through krs; close it with
