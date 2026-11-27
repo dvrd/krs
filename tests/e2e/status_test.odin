@@ -19,8 +19,13 @@ status_reports_a_clean_root :: proc(t: ^testing.T) {
 
 	result := fixtures.run(&fixture, "", "status")
 	fixtures.expect_ok(&fixture, result)
-	fixtures.expect_contains(&fixture, result.out, "installed v0.1.0")
+	fixtures.expect_contains(&fixture, result.out, "checked 1 package(s) of this project")
 	fixtures.expect_contains(&fixture, result.out, "everything is in place")
+	testing.expect(t, !strings.contains(result.out, "installed v0.1.0"), "a package in place is not listed")
+
+	global := fixtures.run(&fixture, "", "status", "-g")
+	fixtures.expect_ok(&fixture, global)
+	fixtures.expect_contains(&fixture, global.out, "installed v0.1.0")
 }
 
 @(test)
@@ -40,7 +45,17 @@ status_reports_each_state :: proc(t: ^testing.T) {
 	testing.expect(t, os.remove(krs.path_join(fixture.shared, "gone")) == nil)
 	fixtures.project_imports(&fixture, "beta", "absent")
 
-	result := fixtures.run(&fixture, "", "status")
+	// The project's own problems only: not the root's other links and
+	// directories.
+	project := fixtures.run(&fixture, "", "status")
+	fixtures.expect_failure(&fixture, project, "2 package(s) need attention")
+	fixtures.expect_contains(&fixture, project.out, "altered v0.1.0")
+	fixtures.expect_contains(&fixture, project.out, "absent not installed")
+	for absent in ([]string{"fresh", "gone", "hand"}) {
+		testing.expectf(t, !strings.contains(project.out, absent), "%s is not this project's: %s", absent, project.out)
+	}
+
+	result := fixtures.run(&fixture, "", "status", "-g")
 	fixtures.expect_failure(&fixture, result, "need attention")
 	testing.expect(t, result.code == krs.EXIT_FAILED)
 	fixtures.expect_contains(&fixture, result.out, "altered v0.1.0")
@@ -93,5 +108,5 @@ status_rejects_write_options :: proc(t: ^testing.T) {
 	fixture := fixtures.fixture_make(t)
 	defer fixtures.fixture_destroy(&fixture)
 
-	fixtures.expect_failure(&fixture, fixtures.run(&fixture, "", "status", "--yes"), "status takes only --root")
+	fixtures.expect_failure(&fixture, fixtures.run(&fixture, "", "status", "--yes"), "status takes only --root and -g")
 }

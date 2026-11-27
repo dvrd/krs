@@ -32,7 +32,9 @@ cli_rejects_misuse :: proc(t: ^testing.T) {
 		{{"update", "beta", "--frozen"}, krs.EXIT_FAILED, "--frozen does not apply to update"},
 		{{"link", "beta", "--frozen"}, krs.EXIT_FAILED, "--frozen does not apply to link"},
 		{{"unlink", "beta", "--frozen"}, krs.EXIT_FAILED, "--frozen does not apply to unlink"},
-		{{"link", "ls", "--yes"}, krs.EXIT_FAILED, "link ls takes only --root"},
+		{{"link", "ls"}, krs.EXIT_USAGE, "link ls was removed"},
+		{{"install", "-g"}, krs.EXIT_USAGE, "-g only applies to update and status"},
+		{{"status", "-g", "--yes"}, krs.EXIT_FAILED, "status takes only --root and -g"},
 		{{"link", ".hidden"}, krs.EXIT_FAILED, "is not a usable package name"},
 		{{"pin", "beta", "--yes"}, krs.EXIT_USAGE, "--yes does not apply to pin"},
 	}
@@ -73,7 +75,7 @@ cli_help_prints_usage :: proc(t: ^testing.T) {
 	// A help request never runs the command.
 	link := fixtures.run(&fixture, "", "link", "help")
 	fixtures.expect_ok(&fixture, link)
-	fixtures.expect_contains(&fixture, link.out, "krs link ls")
+	fixtures.expect_contains(&fixture, link.out, "krs status -g")
 	testing.expect_value(t, link.err, "")
 }
 

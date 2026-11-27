@@ -49,7 +49,7 @@ config_ignores_retired_keys :: proc(t: ^testing.T) {
 	text := fmt.aprintf("{{\"format\": 1, \"source_directories\": [\"%s\"], \"trusted_owners\": [\"someone\"]}}\n", fixture.sources)
 	fixtures.write_file(t, krs.path_join(fixture.home, krs.CONFIG_PATH), text)
 
-	result := fixtures.run(&fixture, "", "link", "ls")
+	result := fixtures.run(&fixture, "", "status", "-g")
 	fixtures.expect_ok(&fixture, result)
 	testing.expect(t, !strings.contains(result.out, "no settings"), result.out)
 }
@@ -255,14 +255,14 @@ link_needs_a_src_directory :: proc(t: ^testing.T) {
 }
 
 @(test)
-link_ls_lists_links_and_their_problems :: proc(t: ^testing.T) {
+status_global_lists_links_and_their_problems :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	fixture := fixtures.fixture_make(t)
 	defer fixtures.fixture_destroy(&fixture)
 
-	empty := fixtures.run(&fixture, "", "link", "ls")
-	fixtures.expect_ok(&fixture, empty)
-	fixtures.expect_contains(&fixture, empty.out, "no packages are linked")
+	removed := fixtures.run(&fixture, "", "link", "ls")
+	testing.expect_value(t, removed.code, krs.EXIT_USAGE)
+	fixtures.expect_contains(&fixture, removed.err, "link ls was removed; krs status -g lists the links")
 
 	fixtures.write_file(t, krs.path_join(fixture.sources, "fresh/src/fresh.odin"), "package fresh\n")
 	fixtures.write_file(t, krs.path_join(fixture.sources, "gone/src/gone.odin"), "package gone\n")
@@ -270,17 +270,17 @@ link_ls_lists_links_and_their_problems :: proc(t: ^testing.T) {
 	fixtures.expect_ok(&fixture, fixtures.run(&fixture, "", "link", "gone"))
 	testing.expect(t, os.remove(krs.path_join(fixture.shared, "gone")) == nil)
 
-	listed := fixtures.run(&fixture, "", "link", "ls")
-	fixtures.expect_ok(&fixture, listed)
-	fixtures.expect_contains(&fixture, listed.out, "2 linked in")
-	fixtures.expect_contains(&fixture, listed.out, fmt.aprintf("  fresh -> %s\n", krs.path_join(fixture.sources, "fresh/src")))
-	fixtures.expect_contains(&fixture, listed.out, fmt.aprintf("  gone  -> %s (missing from shared/)", krs.path_join(fixture.sources, "gone/src")))
-	fixtures.expect_contains(&fixture, listed.out, "1 link(s) need attention")
+	listed := fixtures.run(&fixture, "", "status", "-g")
+	fixtures.expect_failure(&fixture, listed, "1 package(s) need attention")
+	fixtures.expect_contains(&fixture, listed.out, "2 package(s) in")
+	fixtures.expect_contains(&fixture, listed.out, fmt.aprintf("  fresh linked -> %s", krs.path_join(fixture.sources, "fresh/src")))
+	fixtures.expect_contains(&fixture, listed.out, "  gone  link broken (missing from shared/)")
+	fixtures.expect_contains(&fixture, listed.out, "krs link gone")
 	testing.expect(t, !krs.path_present(krs.path_join(fixture.shared, "ls")))
 }
 
 @(test)
-link_ls_reports_each_broken_state_with_a_remedy :: proc(t: ^testing.T) {
+status_global_reports_each_broken_link_with_a_remedy :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	fixture := fixtures.fixture_make(t)
 	defer fixtures.fixture_destroy(&fixture)
@@ -302,8 +302,8 @@ link_ls_reports_each_broken_state_with_a_remedy :: proc(t: ^testing.T) {
 
 	testing.expect(t, os.remove_all(krs.path_join(fixture.sources, "lost")) == nil)
 
-	listed := fixtures.run(&fixture, "", "link", "ls")
-	fixtures.expect_ok(&fixture, listed)
+	listed := fixtures.run(&fixture, "", "status", "-g")
+	fixtures.expect_failure(&fixture, listed, "5 package(s) need attention")
 	fixtures.expect_contains(&fixture, listed.out, "(missing from shared/)")
 	fixtures.expect_contains(&fixture, listed.out, "krs link gone")
 	fixtures.expect_contains(&fixture, listed.out, "(replaced by a directory)")
@@ -312,7 +312,6 @@ link_ls_reports_each_broken_state_with_a_remedy :: proc(t: ^testing.T) {
 	fixtures.expect_contains(&fixture, listed.out, "points to")
 	fixtures.expect_contains(&fixture, listed.out, "instead")
 	fixtures.expect_contains(&fixture, listed.out, "(the source no longer exists)")
-	fixtures.expect_contains(&fixture, listed.out, "5 link(s) need attention")
 	testing.expect(t, !strings.contains(listed.out, "to relink one"))
 }
 

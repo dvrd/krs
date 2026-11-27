@@ -137,7 +137,8 @@ status_reports_vendor_mode :: proc(t: ^testing.T) {
 	result := fixtures.run(&fixture, "", "status")
 	fixtures.expect_ok(&fixture, result)
 	fixtures.expect_contains(&fixture, result.out, "vendor mode")
-	fixtures.expect_contains(&fixture, result.out, "installed v1.0.0")
+	fixtures.expect_contains(&fixture, result.out, "everything is in place")
+	fixtures.expect_contains(&fixture, fixtures.run(&fixture, "", "status", "-g").out, "installed v1.0.0")
 }
 
 @(test)

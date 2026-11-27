@@ -69,7 +69,8 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 			return EXIT_USAGE
 		}
 
-		if update_flag == "" && update_flag_only(flag) {
+		// -g also applies to status; it is checked on its own below.
+		if update_flag == "" && update_flag_only(flag) && flag != "-g" && flag != "--global" {
 			update_flag = flag
 		}
 
@@ -250,6 +251,11 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 		return EXIT_USAGE
 	}
 
+	if options.update.global && (len(words) == 0 || (words[0] != "update" && words[0] != "status")) {
+		fail(env, "-g only applies to update and status")
+		return EXIT_USAGE
+	}
+
 	if options.update.doctor && !options.update.upgrade {
 		fail(env, "--doctor needs -u")
 		return EXIT_USAGE
@@ -423,7 +429,9 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 	case words[0] == "fetch" && len(words) == 2:
 		ok = command_fetch(env, words[1])
 	case words[0] == "link" && len(words) == 2 && words[1] == "ls":
-		ok = command_link_list(env, options)
+		// `ls` stays reserved, so it is never linked as a package.
+		fail(env, "link ls was removed; %s lists the links and flags broken ones", "krs status -g")
+		return EXIT_USAGE
 	case words[0] == "link" && len(words) == 2:
 		ok = command_link(env, options, words[1])
 	case words[0] == "unlink" && len(words) == 2:
@@ -860,7 +868,9 @@ Status_Row :: struct {
 	label:     string, // e.g. "installed v1.2.0"
 	color:     string, // ANSI_GREEN, ANSI_YELLOW, ANSI_CYAN or ANSI_DIM
 	notes:     [dynamic]Painted, // already painted, printed with %v
+	hint:      Painted, // how to fix the row, printed as a note; or ""
 	attention: bool,
+	used:      bool, // this project imports or records it
 }
 
 // One row per package the Odin root holds or this project imports or pins.
@@ -872,7 +882,7 @@ status_rows :: proc(state: ^State, imports: []string) -> [dynamic]Status_Row {
 	for record in state.manifest.packages {
 		row := Status_Row{name = record.name}
 		pinned := packages_find(&state.packages, record.name)
-		used := pinned != nil || slice.contains(imports, record.name)
+		row.used = pinned != nil || slice.contains(imports, record.name)
 
 		if record.linked != "" {
 			link, current := link_state(state.shared, record)
@@ -883,6 +893,7 @@ status_rows :: proc(state: ^State, imports: []string) -> [dynamic]Status_Row {
 				row.label = fmt.tprintf("link broken (%s)", link_state_text(link, current))
 				row.color = ANSI_YELLOW
 				row.attention = true
+				row.hint = link_hint(env, state.shared, record, link)
 			}
 		} else {
 			directory := path_join(state.shared, record.name)
@@ -905,7 +916,7 @@ status_rows :: proc(state: ^State, imports: []string) -> [dynamic]Status_Row {
 			}
 		}
 
-		if !used {
+		if !row.used {
 			append(&row.notes, paint(env, ANSI_DIM, "not imported here"))
 		}
 		append(&rows, row)
@@ -922,7 +933,8 @@ status_rows :: proc(state: ^State, imports: []string) -> [dynamic]Status_Row {
 		}
 
 		row := Status_Row{name = entry.name, label = "unmanaged", color = ANSI_DIM}
-		if packages_find(&state.packages, entry.name) != nil || slice.contains(imports, entry.name) {
+		row.used = packages_find(&state.packages, entry.name) != nil || slice.contains(imports, entry.name)
+		if row.used {
 			append(&row.notes, paint(env, ANSI_YELLOW, "pinned but not managed"))
 			row.attention = true
 		}
@@ -949,7 +961,7 @@ status_rows :: proc(state: ^State, imports: []string) -> [dynamic]Status_Row {
 			continue
 		}
 
-		append(&rows, Status_Row{name = name, label = "not installed", color = ANSI_YELLOW, attention = true})
+		append(&rows, Status_Row{name = name, label = "not installed", color = ANSI_YELLOW, attention = true, used = true})
 	}
 
 	slice.sort_by(rows[:], proc(a, b: Status_Row) -> bool {
@@ -958,10 +970,11 @@ status_rows :: proc(state: ^State, imports: []string) -> [dynamic]Status_Row {
 	return rows
 }
 
-// `krs status`: what the Odin root holds and what needs attention. Writes nothing.
+// `krs status`: whether this project's packages are in place, listing only
+// those that are not; with -g, everything the Odin root holds. Writes nothing.
 command_status :: proc(env: ^Env, options: Options) -> bool {
 	if options.frozen || options.yes {
-		return fail(env, "status takes only --root")
+		return fail(env, "status takes only --root and -g")
 	}
 
 	state := state_open(env, options) or_return
@@ -975,31 +988,35 @@ command_status :: proc(env: ^Env, options: Options) -> bool {
 		return fail(env, "cannot read the Odin files under %s", env.project)
 	}
 
-	rows := status_rows(state, imports[:])
-	if len(rows) == 0 {
-		info(env, "nothing is installed in %s and this project imports nothing", state.shared)
-		success(env, "everything is in place")
-		return true
-	}
+	global := options.update.global
+	all := status_rows(state, imports[:])
+	rows := make([dynamic]Status_Row, context.temp_allocator)
+	used, attention := 0, 0
+	for row in all {
+		if row.used {
+			used += 1
+		}
 
-	width := 0
-	attention := 0
-	for row in rows {
-		width = max(width, len(row.name))
-		if row.attention {
+		if row.attention && (global || row.used) {
 			attention += 1
 		}
+
+		if global || (row.used && row.attention) {
+			append(&rows, row)
+		}
 	}
 
-	info(env, "%d package(s) in %s", len(rows), state.shared)
-	for row in rows {
-		padding := strings.repeat(" ", width - len(row.name), context.temp_allocator)
-		b := strings.builder_make(context.temp_allocator)
-		for n in row.notes {
-			fmt.sbprintf(&b, "  %v", n)
-		}
-		say(env, "  %s%v %v%v", row.name, padding, paint(env, row.color, row.label), Painted(strings.to_string(b)))
+	switch {
+	case global && len(rows) == 0:
+		info(env, "nothing is installed in %s and this project imports nothing", state.shared)
+	case global:
+		info(env, "%d package(s) in %s", len(rows), state.shared)
+	case used == 0:
+		info(env, "this project imports no shared: packages and records none")
+	case:
+		info(env, "checked %d package(s) of this project in %s", used, state.shared)
 	}
+	status_print(env, rows[:])
 
 	if attention > 0 {
 		return fail(env, "%d package(s) need attention", attention)
@@ -1009,62 +1026,41 @@ command_status :: proc(env: ^Env, options: Options) -> bool {
 	return true
 }
 
-// Lists the linked packages of the Odin root and what is wrong with each link.
-command_link_list :: proc(env: ^Env, options: Options) -> bool {
-	if options.frozen || options.yes {
-		return fail(env, "link ls takes only --root")
-	}
-
-	state := state_open(env, options) or_return
-	defer state_close(state)
-
+status_print :: proc(env: ^Env, rows: []Status_Row) {
 	width := 0
-	count := 0
-	for record in state.manifest.packages {
-		if record.linked != "" {
-			width = max(width, len(record.name))
-			count += 1
-		}
+	for row in rows {
+		width = max(width, len(row.name))
 	}
 
-	if count == 0 {
-		info(env, "no packages are linked in %s", state.shared)
-		return true
-	}
-
-	info(env, "%d linked in %s", count, state.shared)
-	broken := 0
-	for record in state.manifest.packages {
-		if record.linked == "" {
-			continue
+	for row in rows {
+		padding := strings.repeat(" ", width - len(row.name), context.temp_allocator)
+		b := strings.builder_make(context.temp_allocator)
+		for n in row.notes {
+			fmt.sbprintf(&b, "  %v", n)
 		}
-
-		padding := strings.repeat(" ", width - len(record.name), context.temp_allocator)
-		link, current := link_state(state.shared, record)
-		if link == .Working {
-			say(env, "  %s%v %v %s", record.name, padding, paint(env, ANSI_DIM, "->"), record.linked)
-			continue
-		}
-
-		broken += 1
-		say(env, "  %s%v %v %s %v", record.name, padding, paint(env, ANSI_DIM, "->"), record.linked,
-			paint(env, ANSI_YELLOW, fmt.tprintf("(%s)", link_state_text(link, current))))
-		target := path_join(state.shared, record.name)
-		switch link {
-		case .Working:
-		case .Missing:
-			note(env, "run %s to recreate it, or %s to forget it", fmt.tprintf("krs link %s", record.name), fmt.tprintf("krs unlink %s", record.name))
-		case .Directory, .File, .Elsewhere:
-			note(env, "krs did not make %s; run %s to forget the link, remove it by hand, then %s", target, fmt.tprintf("krs unlink %s", record.name), fmt.tprintf("krs link %s", record.name))
-		case .Source_Missing:
-			note(env, "restore the checkout at %s, or run %s to remove the link", record.linked, fmt.tprintf("krs unlink %s", record.name))
+		say(env, "  %s%v %v%v", row.name, padding, paint(env, row.color, row.label), Painted(strings.to_string(b)))
+		if row.hint != "" {
+			note(env, "%v", row.hint)
 		}
 	}
+}
 
-	if broken > 0 {
-		warn(env, "%d link(s) need attention", broken)
+// How to fix a broken link.
+link_hint :: proc(env: ^Env, shared: string, record: Manifest_Record, link: Link_State) -> Painted {
+	link_command := fmt.tprintf("krs link %s", record.name)
+	unlink_command := fmt.tprintf("krs unlink %s", record.name)
+	switch link {
+	case .Working:
+		return ""
+	case .Missing:
+		return styled(env, "run %s to recreate it, or %s to forget it", link_command, unlink_command)
+	case .Directory, .File, .Elsewhere:
+		target := path_join(shared, record.name)
+		return styled(env, "krs did not make %s; run %s to forget the link, remove it by hand, then %s", target, unlink_command, link_command)
+	case .Source_Missing:
+		return styled(env, "restore the checkout at %s, or run %s to remove the link", record.linked, unlink_command)
 	}
-	return true
+	return ""
 }
 
 // What `shared/<name>` holds compared with the link krs recorded.
