@@ -70,6 +70,7 @@ Set `KRS_NO_ANIMATION=1` to keep terminal colors with static output. Set
 `NO_COLOR=1` to turn off colors and animations in `krs` and `task install`.
 
 - `krs install` resolves the project's `shared:` imports. With the example config, `import "shared:kessel"` can fetch `dvrd/kessel` automatically when a matching local or cached release is missing. Use `--frozen` to require the versions already recorded in `.krs/packages.json`.
+- `krs ls` lists this project's packages: the version `.krs/packages.json` records, whether the project imports it or which packages pull it in, whether it is pinned, and what the Odin root holds for it (installed, linked, missing, or another version). It also lists imports not recorded yet, and changes nothing.
 - `krs status` lists what the Odin root holds for this project and exits 1 when a package is altered, missing, broken or pinned differently.
 - `krs pin surf` holds surf at the release `.krs/packages.json` records; `krs unpin surf` lets it move again. A dependency cannot move a pinned package.
 - `krs vendor` copies every dependency, at this project's versions, into `vendor/` and makes every later krs command for this project use it. Commit `vendor/` (if the project's `.gitignore` ignores `vendor/`, change it) and build with `odin build . -collection:shared=vendor`. Links are not available in vendor mode; delete `vendor/` to go back to the Odin root's `shared/`.

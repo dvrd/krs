@@ -33,6 +33,16 @@ options:
   %[0]s--root=<path>%[1]s  work on the shared/ of the Odin root at <path>
 `
 
+HELP_LS :: `%[0]susage:%[1]s krs ls [--root=<path>]
+
+Lists this project's packages: the version .krs/packages.json records, why the
+project has it (imported here, or via the packages that import it), and what
+the Odin root holds for it. Imports not recorded yet are listed too.
+
+options:
+  %[0]s--root=<path>%[1]s  work on the shared/ of the Odin root at <path>
+`
+
 HELP_UPDATE :: `%[0]susage:%[1]s krs update [<package>[@<tag>]...] [options]
 
 Lists newer releases of this project's packages and changes nothing. Names
@@ -155,7 +165,8 @@ options:
 @(rodata)
 COMMAND_HELP := [?]Command_Help {
 	{"install", "install the releases this project imports", HELP_INSTALL},
-	{"status", "list what the Odin root holds for this project", HELP_STATUS},
+	{"ls", "list this project's packages and their versions", HELP_LS},
+	{"status", "check what the Odin root holds for this project", HELP_STATUS},
 	{"update", "list newer releases; with -u, upgrade to them", HELP_UPDATE},
 	{"fetch", "refresh the GitHub releases of this project's dependencies", HELP_FETCH},
 	{"link", "use a checkout's live src/ in place of a release", HELP_LINK},

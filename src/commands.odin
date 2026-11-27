@@ -412,6 +412,8 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 		ok = command_install(env, options)
 	case words[0] == "status" && len(words) == 1:
 		ok = command_status(env, options)
+	case words[0] == "ls" && len(words) == 1:
+		ok = command_list(env, options)
 	case words[0] == "update" && deep_run:
 		ok = command_update_deep(env, options, words[:])
 	case words[0] == "update":
