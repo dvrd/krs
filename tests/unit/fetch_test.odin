@@ -77,16 +77,49 @@ command_fetch_all_counts_bad_libs_and_accepts_none :: proc(t: ^testing.T) {
 	errors := strings.builder_make()
 	env := krs.Env{home = fixture.home, project = fixture.project, out = strings.to_writer(&out), err = strings.to_writer(&errors)}
 	testing.expect(t, krs.command_fetch_all(&env))
-	testing.expect(t, strings.contains(strings.to_string(out), "no libs in"))
+	testing.expect(t, strings.contains(strings.to_string(out), "this project has no dependencies"))
 
-	config := `{"format": 1, "source_directories": [], "libs": {"a": {"source": "path", "target": "x/a"}, "b": {"source": "github", "target": "bad"}}}`
+	// Only the libs the project imports are checked; c is never read.
+	config := `{"format": 1, "source_directories": [], "libs": {"a": {"source": "path", "target": "x/a"}, "b": {"source": "github", "target": "bad"}, "c": {"source": "path", "target": "x/c"}}}`
 	fixtures.write_file(t, krs.path_join(fixture.home, krs.CONFIG_PATH), config)
+	fixtures.write_file(t, krs.path_join(fixture.project, "main.odin"), "package main\n\nimport \"shared:a\"\nimport \"shared:b\"\n")
 	strings.builder_reset(&out)
 	testing.expect(t, !krs.command_fetch_all(&env))
-	testing.expect(t, strings.contains(strings.to_string(errors), "could not fetch 2 of 2 lib(s)"))
+	testing.expect(t, strings.contains(strings.to_string(errors), "could not fetch 2 of 2 GitHub package(s)"))
 	testing.expect(t, strings.contains(strings.to_string(out), "libs.a must use source github"))
 	testing.expect(t, strings.contains(strings.to_string(out), "libs.b.target must be a GitHub owner/repo"))
+	testing.expect(t, !strings.contains(strings.to_string(out), "libs.c"))
 	testing.expect(t, !os.exists(krs.repository_store(&env)))
+}
+
+@(test)
+package_github_uses_the_lib_or_an_existing_cache :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixtures.fixture_make(t)
+	defer fixtures.fixture_destroy(&fixture)
+
+	out := strings.builder_make()
+	env := krs.Env{home = fixture.home, out = strings.to_writer(&out)}
+	config := krs.Config{libs = make(map[string]krs.Library_Source)}
+	config.libs["kessel"] = krs.Library_Source{source = "github", target = "dvrd/kessel"}
+
+	github, from_github, valid := krs.package_github(&env, config, "kessel", "")
+	testing.expect(t, from_github && valid)
+	testing.expect_value(t, krs.github_locator(github), "dvrd/kessel")
+
+	// An origin without a cache entry is not fetched: krs never creates one
+	// the user did not configure.
+	_, from_github, _ = krs.package_github(&env, config, "surf", "https://github.com/dvrd/surf.git")
+	testing.expect(t, !from_github)
+
+	cached := krs.GitHub_Repository{owner = "dvrd", name = "surf"}
+	os.make_directory_all(krs.github_cache_path(&env, cached))
+	github, from_github, valid = krs.package_github(&env, config, "surf", "https://github.com/dvrd/surf.git")
+	testing.expect(t, from_github && valid)
+	testing.expect_value(t, krs.github_locator(github), "dvrd/surf")
+
+	_, from_github, _ = krs.package_github(&env, config, "local", "/src/local")
+	testing.expect(t, !from_github)
 }
 
 // An empty bare repository in the fixture, opened through krs; close it with

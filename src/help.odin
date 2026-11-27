@@ -77,8 +77,10 @@ output:
 
 HELP_FETCH :: `%[0]susage:%[1]s krs fetch [<owner>/<repo>]
 
-With no argument, refreshes the GitHub releases of the libraries in the
-config's libs. With <owner>/<repo>, selects or refreshes that repository.
+With no argument, refreshes the GitHub releases of this project's
+dependencies: the packages .krs/packages.json records and the shared: names
+the project imports. With <owner>/<repo>, selects or refreshes that
+repository.
 `
 
 HELP_LINK :: `%[0]susage:%[1]s krs link <package> [--root=<path>] [--yes]
@@ -154,7 +156,7 @@ COMMAND_HELP := [?]Command_Help {
 	{"install", "install the releases this project imports", HELP_INSTALL},
 	{"status", "list what the Odin root holds for this project", HELP_STATUS},
 	{"update", "list newer releases; with -u, upgrade to them", HELP_UPDATE},
-	{"fetch", "refresh the GitHub releases of libraries", HELP_FETCH},
+	{"fetch", "refresh the GitHub releases of this project's dependencies", HELP_FETCH},
 	{"link", "use a checkout's live src/ in place of a release", HELP_LINK},
 	{"unlink", "remove a link", HELP_UNLINK},
 	{"pin", "hold a package at the release this project records", HELP_PIN},
