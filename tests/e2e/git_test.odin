@@ -313,6 +313,24 @@ fetch_without_arguments_refreshes_only_this_projects_dependencies :: proc(t: ^te
 }
 
 @(test)
+fetch_without_arguments_refreshes_an_unrecorded_cached_import :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixtures.fixture_make(t)
+	defer fixtures.fixture_destroy(&fixture)
+
+	fixtures.github_fixture_release(&fixture, "dvrd", "beta", "v1.0.0")
+	fixtures.expect_ok(&fixture, fixtures.run(&fixture, "", "fetch", "dvrd/beta"))
+	fixtures.project_imports(&fixture, "beta")
+
+	second := fixtures.github_fixture_release(&fixture, "dvrd", "beta", "v1.1.0")
+	result := fixtures.run(&fixture, "", "fetch")
+	fixtures.expect_ok(&fixture, result)
+	fixtures.expect_contains(&fixture, result.out, "fetched tags for https://github.com/dvrd/beta.git")
+	beta := krs.path_join(fixture.home, ".local/shared/krs/repos/github/dvrd/beta")
+	testing.expect_value(t, fixtures.git(t, beta, "rev-parse", "refs/tags/v1.1.0"), second)
+}
+
+@(test)
 fetch_without_arguments_reports_bad_entries :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	fixture := fixtures.fixture_make(t)

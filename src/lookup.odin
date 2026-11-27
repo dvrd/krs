@@ -113,7 +113,10 @@ repository_has_tag :: proc(repository: ^Repository, tag: string) -> bool {
 	return false
 }
 
-repository_candidate :: proc(state: ^State, path, tag, origin: string, cached := false) -> (repository: Repository, ok: bool) {
+// With `accept_gained_origin`, a checkout recorded as local that has gained a
+// remote since is accepted; without it, it is passed over without a report,
+// so that a later pass may still take it.
+repository_candidate :: proc(state: ^State, path, tag, origin: string, cached := false, accept_gained_origin := true) -> (repository: Repository, ok: bool) {
 	if !os.is_directory(path) {
 		return {}, false
 	}
@@ -133,7 +136,11 @@ repository_candidate :: proc(state: ^State, path, tag, origin: string, cached :=
 	// A checkout recorded while it had no remote may have gained one since;
 	// it is still the same checkout, and installing still checks the
 	// recorded commit. The other way round stays a different repository.
-	gained_origin := origin == SOURCE_LOCAL && !cached
+	gained_origin := origin == SOURCE_LOCAL && !cached && repository.source != origin
+	if reason == "" && gained_origin && !accept_gained_origin {
+		return {}, false
+	}
+
 	if reason == "" && origin != "" && origin != repository.source && !gained_origin {
 		reason = fmt.aprintf("it comes from %s, not the recorded %s", repository.source, origin)
 	}
@@ -160,9 +167,20 @@ manifest_repository :: proc(state: ^State, record: Manifest_Record) -> string {
 repository_find :: proc(state: ^State, name, tag, source: string) -> (repository: Repository, ok: bool) {
 	origin := source_identity(source)
 	for directory in state.config.source_directories {
-		candidate, found := repository_candidate(state, path_join(directory, name), tag, origin)
+		candidate, found := repository_candidate(state, path_join(directory, name), tag, origin, accept_gained_origin = false)
 		if found {
 			return candidate, true
+		}
+	}
+
+	// Only when no source directory holds a checkout that still matches the
+	// local record: one that has gained a remote since.
+	if origin == SOURCE_LOCAL {
+		for directory in state.config.source_directories {
+			candidate, found := repository_candidate(state, path_join(directory, name), tag, origin)
+			if found {
+				return candidate, true
+			}
 		}
 	}
 

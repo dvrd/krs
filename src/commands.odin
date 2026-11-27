@@ -21,7 +21,18 @@ run :: proc(env: ^Env, arguments: []string) -> int {
 		return EXIT_OK
 	}
 
-	if topic, asked := help_request(arguments); asked {
+	// --color applies to every command, help included, wherever it is given.
+	uncolored := make([dynamic]string, 0, len(arguments), context.temp_allocator)
+	for argument in arguments {
+		if argument == "--color" {
+			env.style.stdout = true
+			env.style.color = true
+			continue
+		}
+		append(&uncolored, argument)
+	}
+
+	if topic, asked := help_request(uncolored[:]); asked {
 		return help_run(env, topic)
 	}
 

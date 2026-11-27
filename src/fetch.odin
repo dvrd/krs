@@ -68,9 +68,10 @@ command_fetch_all :: proc(env: ^Env) -> bool {
 	return true
 }
 
-// Where package `name` is fetched from: its configured lib, or the GitHub
-// origin `source` records when that repository is already cached. Never a
-// cache entry the user did not configure. `from_github` is false for a local
+// Where package `name` is fetched from: its configured lib, the GitHub origin
+// `source` records when that repository is already cached, or, with no record,
+// the one cached repository of that name. Never a cache entry the user did not
+// configure. `from_github` is false for a local
 // package; `valid` is false for a lib entry that is reported as broken.
 package_github :: proc(env: ^Env, config: Config, name, source: string) -> (github: GitHub_Repository, from_github, valid: bool) {
 	if _, configured := config.libs[name]; configured {
@@ -78,11 +79,47 @@ package_github :: proc(env: ^Env, config: Config, name, source: string) -> (gith
 		return github, true, valid
 	}
 
+	if source == "" {
+		// Not recorded yet: the cached repository install would choose, the
+		// one owner/<name> in the cache. Two make the name ambiguous.
+		matches := github_cached_matches(env, name)
+		switch len(matches) {
+		case 0:
+			return {}, false, false
+		case 1:
+			return matches[0], true, true
+		}
+
+		warn(env, "more than one cached GitHub repository matches %s; select one in %s", name, "config.json libs")
+		return {}, true, false
+	}
+
 	origin, parsed := github_repository_from_origin(source_identity(source))
 	if !parsed || !os.is_directory(github_cache_path(env, origin)) {
 		return {}, false, false
 	}
 	return origin, true, true
+}
+
+// The cached GitHub repositories named `name`, under any owner.
+github_cached_matches :: proc(env: ^Env, name: string) -> []GitHub_Repository {
+	matches := make([dynamic]GitHub_Repository, context.temp_allocator)
+	owners, err := os.read_all_directory_by_path(github_store(env), context.temp_allocator)
+	if err != nil {
+		return matches[:]
+	}
+
+	for owner in owners {
+		if owner.type != .Directory {
+			continue
+		}
+
+		locator, valid := github_repository(path_join(owner.name, name))
+		if valid && os.is_directory(github_cache_path(env, locator)) {
+			append(&matches, locator)
+		}
+	}
+	return matches[:]
 }
 
 // Validates `libs.<name>`; a problem is reported as a warning when `report`.
