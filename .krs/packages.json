@@ -4,9 +4,9 @@
     {
       "name": "kakunou",
       "source": "https://github.com/dvrd/kakunou.git",
-      "tag": "v0.2.2",
-      "commit": "0d86806d7fc17e27fb7ddbc16421a1e9a98fb82d",
-      "hash": "6dfad6bdf480900179b1c6a4f0e73435d0236881c04b168442f3ee35e275ad29"
+      "tag": "v0.2.8",
+      "commit": "dc698e2b4dbd39fd861c445e674bc44105c46982",
+      "hash": "62a7a1fc3c01845f705dd6fc443b6e0b04f6ad058472b800d5ad63bb3a6652b0"
     }
   ]
 }

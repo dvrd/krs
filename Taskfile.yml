@@ -56,7 +56,7 @@ tasks:
       - task: version:tool
       - '"${KRS_CHECK_DIR:-${TMPDIR:-/tmp}/krs-check}/krs-version" next'
 
-  release:preview:
+  publish:preview:
     desc: Preview the next release locally (version, notes, package); publishes nothing
     silent: true
     cmds:

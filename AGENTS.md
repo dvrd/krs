@@ -149,7 +149,7 @@ by hand: `git fetch --tags && git switch develop && git merge origin/main && git
 Until then, `task version:next` on `develop` fails with "this branch must
 contain the latest release".
 
-`task release:preview` previews the release locally: the version, the
+`task publish:preview` previews the release locally: the version, the
 release notes, and the tested, packaged binary in `preview/` under the output
 directory. Nothing is published; releases are published only by the
 release workflow when `develop` is merged into `main`.
