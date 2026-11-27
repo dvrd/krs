@@ -29,6 +29,8 @@ run :: proc(args: []string) -> int {
 		return EXIT_OK if toolchain() else EXIT_FAILED
 	case "test-layout":
 		return EXIT_OK if test_layout(".") else EXIT_FAILED
+	case "build":
+		return build_command()
 	case "install":
 		return install()
 	}
@@ -36,7 +38,7 @@ run :: proc(args: []string) -> int {
 }
 
 usage :: proc() -> int {
-	fmt.eprintln("krs: usage: krs-dev toolchain | test-layout | install")
+	fmt.eprintln("krs: usage: krs-dev toolchain | test-layout | build | install")
 	return EXIT_USAGE
 }
 

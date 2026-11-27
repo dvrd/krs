@@ -9,10 +9,11 @@ tasks:
       - task: test
 
   build:
-    desc: Build the KRS binary
+    desc: Build the KRS binary; nothing to do when no input changed
+    silent: true
+    deps: [toolchain]
     cmds:
-      - task: odin
-        vars: {ACTION: build, PACKAGE: cmd/krs, BINARY: krs, OPT: '{{.OPT | default "speed"}}', QUIET: '{{.QUIET}}'}
+      - '"${KRS_CHECK_DIR:-${TMPDIR:-/tmp}/krs-check}/krs-dev" build'
 
   install:
     desc: Build KRS and install it in ~/.local/bin or KRS_INSTALL_DIR

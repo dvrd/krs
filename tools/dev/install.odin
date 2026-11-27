@@ -40,10 +40,13 @@ Step :: struct {
 
 // What the build needs, found by the steps before it.
 Build :: struct {
-	out:        string,
-	version:    string,
-	link_flags: string,
-	log_path:   string,
+	out:          string,
+	version:      string,
+	link_flags:   string,
+	log_path:     string,
+	odin_version: string,
+	odin_root:    string,
+	skipped:      bool, // nothing changed since the last build
 }
 
 display_make :: proc() -> Display {
@@ -79,12 +82,6 @@ install_fail :: proc(display: Display, message: string, code := EXIT_FAILED) -> 
 install :: proc() -> int {
 	started := time.tick_now()
 	display := display_make()
-	build := Build{out = os.get_env("KRS_CHECK_DIR", context.allocator)}
-	if build.out == "" {
-		tmp := os.get_env("TMPDIR", context.allocator)
-		build.out = fmt.tprintf("%s/krs-check", strings.trim_right(tmp, "/") if tmp != "" else "/tmp")
-	}
-
 	bin_dir := os.get_env("KRS_INSTALL_DIR", context.allocator)
 	if bin_dir == "" {
 		bin_dir = fmt.tprintf("%s/.local/bin", os.get_env("HOME", context.allocator))
@@ -95,28 +92,17 @@ install :: proc() -> int {
 		return install_fail(display, fmt.tprintf("cannot replace directory %s", destination))
 	}
 
-	if !ensure_dir(build.out) {
-		return install_fail(display, fmt.tprintf("cannot create %s", build.out))
+	build, code := build_begin(display)
+	if code != EXIT_OK {
+		return code
 	}
-
-	handler: posix.sigaction_t
-	handler.sa_handler = on_signal
-	posix.sigemptyset(&handler.sa_mask)
-	posix.sigaction(.SIGINT, &handler, nil)
-	posix.sigaction(.SIGTERM, &handler, nil)
-
-	build.log_path = fmt.tprintf("%s/krs-install.log", build.out)
 	defer os.remove(build.log_path)
 
-	if code := prepare(display, &build); code != EXIT_OK {
+	if code = build_krs(display, &build); code != EXIT_OK {
 		return code
 	}
 
-	if code := compile(display, build); code != EXIT_OK {
-		return code
-	}
-
-	if code := place(display, build, bin_dir, destination); code != EXIT_OK {
+	if code = place(display, build, bin_dir, destination); code != EXIT_OK {
 		return code
 	}
 
@@ -140,6 +126,12 @@ prepare :: proc(display: Display, build: ^Build) -> int {
 	expected := strings.trim_space(string(expected_data))
 	agreement := "as in ODIN_VERSION" if toolchain_matches(actual, expected) else fmt.tprintf("ODIN_VERSION has %s", expected)
 	step_done(display, step, fmt.tprintf("%s, %s", actual, agreement))
+	build.odin_version = actual
+	build.odin_root = os.get_env("ODIN_ROOT", context.allocator)
+	if build.odin_root == "" {
+		build.odin_root = strings.trim_space(capture_text({"odin", "root"}))
+	}
+	build.odin_root = strings.trim_right(build.odin_root, "/")
 
 	step = step_begin(display, "Finding libgit2")
 	libdir, lib_started := capture({"pkg-config", "--variable=libdir", "libgit2"})

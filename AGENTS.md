@@ -24,9 +24,9 @@ Task warns if the running compiler differs. Set `KRS_STRICT_TOOLCHAIN=1`
 to make a mismatch fail the build.
 
 - `task` or `task check` builds KRS and runs the suite.
-- `task build` builds the CLI with `-o:speed` and prints its path.
+- `task build` builds the CLI with `-o:speed` and prints its path. It records what the binary was built from (the files of `cmd/krs`, `src` and `shared:kakunou`, the compiler, the version and the flags) and does nothing when none of it changed; it names what changed otherwise.
 - `task test` builds the tests with `-o:none` and runs them.
-- `task install` builds the same optimized CLI and installs it as `~/.local/bin/krs`. It prints each step as it finishes: the compiler and libgit2 it found, the version, type-checking, the optimized compile with the compiler's timings, and the copy.
+- `task install` builds the same optimized CLI, skipping the compile when nothing changed, and installs it as `~/.local/bin/krs`. It prints each step as it finishes: the compiler and libgit2 it found, the version, type-checking, the optimized compile with the compiler's timings, and the copy.
 
 Set `KRS_CHECK_DIR` to choose the output directory. The default is
 `${TMPDIR:-/tmp}/krs-check`.
