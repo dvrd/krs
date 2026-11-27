@@ -1314,3 +1314,36 @@ recorded_github_source_refuses_a_checkout_without_one :: proc(t: ^testing.T) {
 	listed := fixtures.run(&fixture, "", "update")
 	fixtures.expect_contains(&fixture, listed.out, "not the recorded https://github.com/dvrd/beta.git")
 }
+
+@(test)
+matching_local_checkout_wins_over_one_that_gained_a_remote :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixtures.fixture_make(t)
+	defer fixtures.fixture_destroy(&fixture)
+
+	fixtures.library_release(&fixture, "beta", "v1.0.0")
+	fixtures.project_imports(&fixture, "beta")
+	fixtures.expect_ok(&fixture, fixtures.run(&fixture, "", "install", "--yes"))
+	recorded := fixtures.record_of(&fixture, "beta")
+	testing.expect_value(t, recorded.source, krs.SOURCE_LOCAL)
+
+	// An earlier source directory gets another checkout of beta, pushed to
+	// GitHub, whose v1.0.0 is a different commit.
+	other := krs.path_join(fixture.base, "other")
+	clone := krs.path_join(other, "beta")
+	fixtures.write_file(t, krs.path_join(clone, "src/beta.odin"), "package beta\n\nRELEASE :: \"elsewhere\"\n")
+	fixtures.git(t, clone, "init", "--quiet")
+	fixtures.git(t, clone, "add", "-A")
+	fixtures.git(t, clone, "commit", "--quiet", "-m", "elsewhere")
+	fixtures.git(t, clone, "tag", "v1.0.0")
+	fixtures.git(t, clone, "remote", "add", "origin", "https://github.com/dvrd/beta.git")
+	fixtures.fixture_config(&fixture, {other, fixture.sources})
+
+	// A fresh Odin root makes the frozen install look the repository up.
+	fresh := krs.path_join(fixture.base, "fresh-root")
+	os.make_directory_all(krs.path_join(fresh, "shared"))
+	result := fixtures.run(&fixture, "", "install", "--frozen", fmt.aprintf("--root=%s", fresh))
+	fixtures.expect_ok(&fixture, result)
+	testing.expect(t, !strings.contains(result.out, "skipped"), result.out)
+	fixtures.expect_contains(&fixture, fixtures.read_file(krs.path_join(fresh, "shared/beta/beta.odin")), "RELEASE :: \"v1.0.0\"")
+}
