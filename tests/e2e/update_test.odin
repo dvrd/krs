@@ -1270,3 +1270,47 @@ doctor_recovery_command_restores :: proc(t: ^testing.T) {
 	fixtures.expect_release(&fixture, "beta", "v0.1.0")
 	testing.expect_value(t, fixtures.record_of(&fixture, "beta").tag, "v0.1.0")
 }
+
+@(test)
+checkout_that_gained_a_remote_is_still_checked :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixtures.fixture_make(t)
+	defer fixtures.fixture_destroy(&fixture)
+
+	fixtures.library_release(&fixture, "beta", "v1.0.0")
+	fixtures.project_imports(&fixture, "beta")
+	fixtures.expect_ok(&fixture, fixtures.run(&fixture, "", "install", "--yes"))
+	testing.expect_value(t, fixtures.record_of(&fixture, "beta").source, krs.SOURCE_LOCAL)
+
+	// The checkout is pushed to GitHub after it was recorded.
+	beta := krs.path_join(fixture.sources, "beta")
+	fixtures.git(t, beta, "remote", "add", "origin", "https://github.com/dvrd/beta.git")
+	fixtures.library_release(&fixture, "beta", "v1.1.0")
+
+	listed := fixtures.run(&fixture, "", "update")
+	fixtures.expect_ok(&fixture, listed)
+	fixtures.expect_contains(&fixture, fixtures.squeeze(listed.out), "Minor\n beta v1.0.0 -> v1.1.0")
+	testing.expect(t, !strings.contains(listed.out, "skipped"), listed.out)
+
+	fixtures.expect_ok(&fixture, fixtures.run(&fixture, "", "install", "--frozen"))
+	fixtures.expect_ok(&fixture, fixtures.run(&fixture, "", "update", "-u", "--yes"))
+	fixtures.expect_release(&fixture, "beta", "v1.1.0")
+	testing.expect_value(t, fixtures.record_of(&fixture, "beta").source, "https://github.com/dvrd/beta.git")
+}
+
+@(test)
+recorded_github_source_refuses_a_checkout_without_one :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixtures.fixture_make(t)
+	defer fixtures.fixture_destroy(&fixture)
+
+	fixtures.library_release(&fixture, "beta", "v1.0.0")
+	beta := krs.path_join(fixture.sources, "beta")
+	fixtures.git(t, beta, "remote", "add", "origin", "https://github.com/dvrd/beta.git")
+	fixtures.project_imports(&fixture, "beta")
+	fixtures.expect_ok(&fixture, fixtures.run(&fixture, "", "install", "--yes"))
+
+	fixtures.git(t, beta, "remote", "remove", "origin")
+	listed := fixtures.run(&fixture, "", "update")
+	fixtures.expect_contains(&fixture, listed.out, "not the recorded https://github.com/dvrd/beta.git")
+}

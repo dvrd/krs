@@ -180,7 +180,7 @@ dist_is_safe :: proc(dist, top: string) -> (ok: bool, reason: string) {
 	return true, ""
 }
 
-// Runs `task check` and `task build` at version `next` and copies the binary
+// Runs `task check` and `task release` at version `next` and copies the binary
 // into `package_dir`, checking that it reports `next`.
 build_release :: proc(env: ^krs.Env, next, package_dir: string) -> bool {
 	assert(next != "")
@@ -188,14 +188,14 @@ build_release :: proc(env: ^krs.Env, next, package_dir: string) -> bool {
 
 	environment := environment_with(env, "KRS_VERSION", next) or_return
 	run_inherited(env, {"task", "check"}, environment) or_return
-	run_inherited(env, {"task", "build"}, environment) or_return
+	run_inherited(env, {"task", "release"}, environment) or_return
 
 	if err := os.make_directory_all(package_dir); err != nil {
 		return krs.fail(env, "cannot create %s: %v", package_dir, err)
 	}
 
 	binary := path_join(package_dir, "krs")
-	built := path_join(check_dir(), "krs")
+	built := path_join(path_join(check_dir(), "release"), "krs")
 	if err := os.copy_file(binary, built); err != nil {
 		return krs.fail(env, "cannot copy %s: %v", built, err)
 	}

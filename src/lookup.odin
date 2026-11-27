@@ -130,7 +130,11 @@ repository_candidate :: proc(state: ^State, path, tag, origin: string, cached :=
 		reason = fmt.aprintf("it has no tag %s", tag)
 	}
 
-	if reason == "" && origin != "" && origin != repository.source {
+	// A checkout recorded while it had no remote may have gained one since;
+	// it is still the same checkout, and installing still checks the
+	// recorded commit. The other way round stays a different repository.
+	gained_origin := origin == SOURCE_LOCAL && !cached
+	if reason == "" && origin != "" && origin != repository.source && !gained_origin {
 		reason = fmt.aprintf("it comes from %s, not the recorded %s", repository.source, origin)
 	}
 

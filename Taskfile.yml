@@ -9,10 +9,18 @@ tasks:
       - task: test
 
   build:
-    desc: Build the KRS binary
+    desc: Build a debug KRS binary; nothing to do when no input changed
+    silent: true
+    deps: [toolchain]
     cmds:
-      - task: odin
-        vars: {ACTION: build, PACKAGE: cmd/krs, BINARY: krs, OPT: '{{.OPT | default "speed"}}', QUIET: '{{.QUIET}}'}
+      - '"${KRS_CHECK_DIR:-${TMPDIR:-/tmp}/krs-check}/krs-dev" build debug'
+
+  release:
+    desc: Build the optimized KRS binary (-o:speed); nothing to do when no input changed
+    silent: true
+    deps: [toolchain]
+    cmds:
+      - '"${KRS_CHECK_DIR:-${TMPDIR:-/tmp}/krs-check}/krs-dev" build release'
 
   install:
     desc: Build KRS and install it in ~/.local/bin or KRS_INSTALL_DIR
@@ -48,15 +56,15 @@ tasks:
       - task: version:tool
       - '"${KRS_CHECK_DIR:-${TMPDIR:-/tmp}/krs-check}/krs-version" next'
 
-  release:
-    desc: Preview the next release locally (version, notes, package)
+  publish:preview:
+    desc: Preview the next release locally (version, notes, package); publishes nothing
     silent: true
     cmds:
       - task: version:tool
       - |
         set -e
         out="${KRS_CHECK_DIR:-${TMPDIR:-/tmp}/krs-check}"
-        "$out/krs-version" prepare --dry-run "$out/release"
+        "$out/krs-version" prepare --dry-run "$out/preview"
 
   # Called by the release workflow; no desc keeps it out of `task --list`.
   version:tool:

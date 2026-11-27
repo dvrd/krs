@@ -16,6 +16,20 @@ main :: proc() {
 }
 
 run :: proc(args: []string) -> int {
+	if len(args) == 2 && args[0] == "build" {
+		if !os.exists("ODIN_VERSION") {
+			return fail("run krs-dev from the KRS repository")
+		}
+
+		switch args[1] {
+		case "debug":
+			return build_command(.Debug)
+		case "release":
+			return build_command(.Release)
+		}
+		return usage()
+	}
+
 	if len(args) != 1 {
 		return usage()
 	}
@@ -36,7 +50,7 @@ run :: proc(args: []string) -> int {
 }
 
 usage :: proc() -> int {
-	fmt.eprintln("krs: usage: krs-dev toolchain | test-layout | install")
+	fmt.eprintln("krs: usage: krs-dev toolchain | test-layout | build debug|release | install")
 	return EXIT_USAGE
 }
 

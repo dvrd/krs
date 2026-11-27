@@ -23,7 +23,9 @@ cli_rejects_misuse :: proc(t: ^testing.T) {
 	table := []Misuse {
 		{{"--bogus"}, krs.EXIT_USAGE, "unknown option --bogus"},
 		{{}, krs.EXIT_USAGE, "usage:"},
-		{{"install", "extra"}, krs.EXIT_USAGE, "usage:"},
+		{{"install", "extra"}, krs.EXIT_USAGE, "usage: krs install"},
+		{{"bogus"}, krs.EXIT_USAGE, "usage: krs <command>"},
+		{{"help", "bogus"}, krs.EXIT_USAGE, "bogus is not a command; run krs help"},
 		{{"fetch", "owner/repo", "--yes"}, krs.EXIT_USAGE, "--yes does not apply to fetch"},
 		{{"fetch", "owner/repo", "--root=/x"}, krs.EXIT_USAGE, "--root does not apply to fetch"},
 		{{"fetch", "--frozen"}, krs.EXIT_USAGE, "--frozen does not apply to fetch"},
@@ -47,9 +49,25 @@ cli_help_prints_usage :: proc(t: ^testing.T) {
 	fixture := fixtures.fixture_make(t)
 	defer fixtures.fixture_destroy(&fixture)
 
-	result := fixtures.run(&fixture, "", "--help")
-	testing.expect_value(t, result.code, krs.EXIT_OK)
-	fixtures.expect_contains(&fixture, result.out, "krs link ls")
+	for arguments in ([][]string{{"help"}, {"--help"}, {"-h"}}) {
+		result := fixtures.run(&fixture, "", ..arguments)
+		testing.expectf(t, result.code == krs.EXIT_OK, "%v: exit %d", arguments, result.code)
+		fixtures.expect_contains(&fixture, result.out, "krs <command> help")
+		testing.expectf(t, strings.count(result.out, "  update ") == 1, "%v lists update once: %s", arguments, result.out)
+	}
+
+	for arguments in ([][]string{{"update", "help"}, {"help", "update"}, {"update", "-u", "--help"}}) {
+		result := fixtures.run(&fixture, "", ..arguments)
+		testing.expectf(t, result.code == krs.EXIT_OK, "%v: exit %d", arguments, result.code)
+		fixtures.expect_contains(&fixture, result.out, "usage: krs update")
+		fixtures.expect_contains(&fixture, result.out, "--doctor-timeout <d>")
+	}
+
+	// A help request never runs the command.
+	link := fixtures.run(&fixture, "", "link", "help")
+	fixtures.expect_ok(&fixture, link)
+	fixtures.expect_contains(&fixture, link.out, "krs link ls")
+	testing.expect_value(t, link.err, "")
 }
 
 @(test)

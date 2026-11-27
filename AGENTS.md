@@ -24,9 +24,17 @@ Task warns if the running compiler differs. Set `KRS_STRICT_TOOLCHAIN=1`
 to make a mismatch fail the build.
 
 - `task` or `task check` builds KRS and runs the suite.
-- `task build` builds the CLI with `-o:speed` and prints its path.
+- `task build` builds a debug CLI (`-debug -o:none`) in `debug/` under the output directory and prints its path.
+- `task release` builds the optimized CLI (`-o:speed`) in `release/` and prints its path.
 - `task test` builds the tests with `-o:none` and runs them.
-- `task install` builds the same optimized CLI and installs it as `~/.local/bin/krs`.
+- `task install` installs the optimized CLI from `task release` as `~/.local/bin/krs`, building it first when needed.
+
+`task build`, `task release` and `task install` print each step as it
+finishes: the compiler and libgit2 found, the version, the inputs that changed,
+type-checking, and the compile with the compiler's timings. Each records what
+its binary was built from (the files of `cmd/krs`, `src` and `shared:kakunou`,
+the compiler, the version and the flags) and does not compile again when none
+of it changed.
 
 Set `KRS_CHECK_DIR` to choose the output directory. The default is
 `${TMPDIR:-/tmp}/krs-check`.
@@ -51,7 +59,12 @@ libraries and the GitHub libraries you want KRS to fetch automatically.
 ```
 
 Run the binary from the Odin project that imports those libraries. Use the path
-printed by `task build` if `krs` is outside your `PATH`.
+printed by `task release` if `krs` is outside your `PATH`.
+
+`krs help` lists the commands. `krs update help` (or `krs help update`, or
+`--help` with the command) shows one command's usage and options. `help` is
+reserved right after a command name, so `krs update help` does not check a
+package named `help`.
 
 Set `KRS_NO_ANIMATION=1` to keep terminal colors with static output. Set
 `NO_COLOR=1` to turn off colors and animations in `krs` and `task install`.
@@ -66,7 +79,7 @@ Set `KRS_NO_ANIMATION=1` to keep terminal colors with static output. Set
 - `krs update -u --doctor` runs the tests (`--doctor-test`, default `odin test .`, with `-collection:shared=vendor` in vendor mode) before and after upgrading; if they fail it reverts, tries each upgrade alone, keeps the passing ones and reports the rest. `odin test .` passes trivially in a package without tests. `--doctor-timeout` (`30s`, `10m`, `2h`; default `30m`) stops a test or install command that runs longer and counts it as a failure; it kills the command's whole process group (a child that calls `setsid` escapes); Ctrl-C during a test run stops the tests too. Outside vendor mode every trial install is visible to all projects on the Odin root until it finishes; if a run stops early, krs prints the `krs update -u --yes name@tag …` command that restores the versions from before the run. The recovery command is printed before the trials even at `--loglevel error`; only `--silent` hides it. That command does not remove packages a trial added. The doctor refuses to start when an unpinned package's installed release differs from the one `.krs/packages.json` records; run `krs install` first.
 - `krs update --cooldown 7` (or `7d`, `12h`, `30m`) ignores releases whose tag commit is younger than that and falls back to the newest older release. `--format cooldown` shows what it held back.
 - `krs update --deep` checks every project under the current directory (each directory with a `.krs/packages.json`, skipping hidden directories and `vendor/`); `--package-file <pattern>` picks projects by lockfile path (`*`, `**`). A nested project's imports belong to it, not to the parent.
-- `krs fetch` with no argument refreshes the GitHub releases of the libraries in `libs`. `krs fetch dvrd/kessel` selects or refreshes one repository over HTTPS. Then run `krs install` or `krs update -u kessel`. `fetch` takes no `--root`, `--frozen` or `--yes`.
+- `krs fetch` with no argument refreshes the GitHub releases of this project's dependencies: the packages `.krs/packages.json` records and the `shared:` names the project imports, through their `libs` entry or the cache of their recorded GitHub origin. Libraries the project does not use are not fetched. `krs fetch dvrd/kessel` selects or refreshes one repository over HTTPS. Then run `krs install` or `krs update -u kessel`. `fetch` takes no `--root`, `--frozen` or `--yes`.
 - `krs link surf` uses the checkout's live `src/`. `krs link ls` lists the links and flags broken ones. `krs unlink surf` removes the link from `shared/`. Add `--restore` to install the recorded release in its place. `ls` is reserved after `link`, so a package named `ls` cannot be linked. If no source directory has a checkout named like the package, `krs link` uses the package's `libs` entry and links the checkout whose `origin` is that GitHub repository.
 - `krs uninstall surf` removes surf from this project's `.krs/packages.json` and from the Odin root's `shared/` (in vendor mode, from `vendor/`), after a confirmation that warns other projects on the root may need it; `--yes` confirms. It removes only the packages named, not their dependencies. If the code or another package still imports surf, krs warns, and the next `krs install` installs it again. With no names, `krs uninstall` lists this project's packages in a fuzzy-search list: type to filter, Space or Tab to select, Ctrl-A for all, Enter to confirm, Ctrl-C to cancel.
 - `krs recover` lists interrupted file publications. `krs recover abandon <id>` gives up on one.
@@ -136,13 +149,14 @@ by hand: `git fetch --tags && git switch develop && git merge origin/main && git
 Until then, `task version:next` on `develop` fails with "this branch must
 contain the latest release".
 
-`task release` previews the release locally: the version, the notes and the
-packaged binary. Nothing is published; releases are published only by the
+`task publish:preview` previews the release locally: the version, the
+release notes, and the tested, packaged binary in `preview/` under the output
+directory. Nothing is published; releases are published only by the
 release workflow when `develop` is merged into `main`.
 
 Tests live in `tests/unit/` (one `<x>_test.odin` per `src/<x>.odin`, calling
 its procedures directly), `tests/e2e/` (whole commands through the harness, one
 file per command area) and `tests/fixtures/` (the harness). `task test` checks
 the mapping with `krs-dev test-layout` (`tools/dev`). When changing command behavior,
-check the CLI usage in [`src/commands.odin`](src/commands.odin) and the
+check the command's help in [`src/help.odin`](src/help.odin) and the
 matching file in `tests/e2e/`.

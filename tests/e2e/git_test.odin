@@ -278,7 +278,7 @@ ssh_clone_satisfies_a_pin_recorded_over_https :: proc(t: ^testing.T) {
 }
 
 @(test)
-fetch_without_arguments_refreshes_every_lib :: proc(t: ^testing.T) {
+fetch_without_arguments_refreshes_only_this_projects_dependencies :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	fixture := fixtures.fixture_make(t)
 	defer fixtures.fixture_destroy(&fixture)
@@ -287,14 +287,29 @@ fetch_without_arguments_refreshes_every_lib :: proc(t: ^testing.T) {
 	fixtures.github_fixture_release(&fixture, "dvrd", "gamma", "v1.0.0")
 	fixtures.write_file(t, krs.path_join(fixture.home, krs.CONFIG_PATH),
 		`{"libs":{"beta":{"source":"github","target":"dvrd/beta"},"gamma":{"source":"github","target":"dvrd/gamma"}}}`)
-	fixtures.expect_ok(&fixture, fixtures.run(&fixture, "", "fetch"))
 	beta := krs.path_join(fixture.home, ".local/shared/krs/repos/github/dvrd/beta")
-	testing.expect(t, os.is_directory(beta))
-	testing.expect(t, os.is_directory(krs.path_join(fixture.home, ".local/shared/krs/repos/github/dvrd/gamma")))
+	gamma := krs.path_join(fixture.home, ".local/shared/krs/repos/github/dvrd/gamma")
 
+	nothing := fixtures.run(&fixture, "", "fetch")
+	fixtures.expect_ok(&fixture, nothing)
+	fixtures.expect_contains(&fixture, nothing.out, "this project has no dependencies; nothing to fetch")
+	testing.expect(t, !os.is_directory(beta) && !os.is_directory(gamma), "a project without imports fetches nothing")
+
+	// An import not yet recorded is fetched through its lib.
+	fixtures.project_imports(&fixture, "beta")
+	fixtures.expect_ok(&fixture, fixtures.run(&fixture, "", "fetch"))
+	testing.expect(t, os.is_directory(beta))
+	testing.expect(t, !os.is_directory(gamma), "a lib this project does not use is left alone")
+
+	// A recorded package is refreshed through the cache of its origin even
+	// when the import is gone and libs no longer names it.
+	fixtures.expect_ok(&fixture, fixtures.run(&fixture, "", "install", "--yes"))
+	fixtures.project_imports(&fixture)
+	fixtures.write_file(t, krs.path_join(fixture.home, krs.CONFIG_PATH), `{"libs":{}}`)
 	second := fixtures.github_fixture_release(&fixture, "dvrd", "beta", "v1.1.0")
 	fixtures.expect_ok(&fixture, fixtures.run(&fixture, "", "fetch"))
 	testing.expect_value(t, fixtures.git(t, beta, "rev-parse", "refs/tags/v1.1.0"), second)
+	testing.expect(t, !os.is_directory(gamma))
 }
 
 @(test)
@@ -303,13 +318,17 @@ fetch_without_arguments_reports_bad_entries :: proc(t: ^testing.T) {
 	fixture := fixtures.fixture_make(t)
 	defer fixtures.fixture_destroy(&fixture)
 
-	no_libs := fixtures.run(&fixture, "", "fetch")
-	fixtures.expect_ok(&fixture, no_libs)
-	fixtures.expect_contains(&fixture, no_libs.out, "nothing to fetch")
+	// A local package needs no fetch.
+	fixtures.library_release(&fixture, "alpha", "v0.1.0")
+	fixtures.project_imports(&fixture, "alpha")
+	local := fixtures.run(&fixture, "", "fetch")
+	fixtures.expect_ok(&fixture, local)
+	fixtures.expect_contains(&fixture, local.out, "no dependency of this project comes from GitHub")
 
 	fixtures.github_fixture_release(&fixture, "dvrd", "beta", "v1.0.0")
 	fixtures.write_file(t, krs.path_join(fixture.home, krs.CONFIG_PATH),
 		`{"libs":{"beta":{"source":"github","target":"dvrd/beta"},"bad":{"source":"gitlab","target":"dvrd/bad"}}}`)
+	fixtures.project_imports(&fixture, "alpha", "bad", "beta")
 	fixtures.expect_failure(&fixture, fixtures.run(&fixture, "", "fetch"), "could not fetch 1 of 2")
 	testing.expect(t, os.is_directory(krs.path_join(fixture.home, ".local/shared/krs/repos/github/dvrd/beta")))
 }
