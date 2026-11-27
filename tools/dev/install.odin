@@ -77,6 +77,7 @@ install_fail :: proc(display: Display, message: string, code := EXIT_FAILED) -> 
 }
 
 install :: proc() -> int {
+	started := time.tick_now()
 	display := display_make()
 	build := Build{out = os.get_env("KRS_CHECK_DIR", context.allocator)}
 	if build.out == "" {
@@ -120,7 +121,7 @@ install :: proc() -> int {
 	}
 
 	icon(display, 32, "✓", false)
-	fmt.printfln("krs: installed %s (%s)", destination, build.version)
+	fmt.printfln("krs: installed %s (%s) in %s", destination, build.version, duration_text(time.tick_since(started)))
 	return EXIT_OK
 }
 
