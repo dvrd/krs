@@ -55,6 +55,25 @@ config_ignores_retired_keys :: proc(t: ^testing.T) {
 }
 
 @(test)
+install_leaves_out_links_the_project_does_not_use :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixtures.fixture_make(t)
+	defer fixtures.fixture_destroy(&fixture)
+
+	fixtures.alpha_release(&fixture)
+	fixtures.project_imports(&fixture, "alpha")
+	fixtures.expect_ok(&fixture, fixtures.run(&fixture, "", "install", "--yes"))
+	fixtures.expect_ok(&fixture, fixtures.run(&fixture, "", "link", "alpha"))
+
+	other := krs.path_join(fixture.base, "other")
+	fixtures.write_file(t, krs.path_join(other, "main.odin"), "package main\n\nmain :: proc() {\n}\n")
+	result := fixtures.run_in(&fixture, other, "", "install")
+	fixtures.expect_ok(&fixture, result)
+	testing.expect(t, !strings.contains(result.out, "linked:"), result.out)
+	testing.expect(t, !strings.contains(result.out, "alpha"), result.out)
+}
+
+@(test)
 link_and_unlink :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	fixture := fixtures.fixture_make(t)

@@ -113,10 +113,10 @@ doctor_spawn :: proc(
 		posix._exit(126)
 	}
 
-	// Parent. The child sets its own group first; this call closes the race
-	// where the parent would signal the group before it exists. EACCES (the
-	// child already ran exec) and ESRCH (it already exited) are both fine.
-	_ = posix.setpgid(pid, pid)
+	// Parent. Only the child sets its group: when the parent also called
+	// setpgid, the two calls could race and macOS failed the child's with
+	// EPERM. Nothing signals the group before this returns, and the read
+	// below ends only after the child's setpgid and exec.
 	posix.close(pipe[1])
 
 	exec_errno: i32

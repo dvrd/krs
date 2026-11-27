@@ -238,9 +238,11 @@ plan_apply :: proc(state: ^State, project_pins := Project_Pins.Record) -> bool {
 		}
 	}
 
+	// The manifest covers every project on the Odin root; only the links this
+	// project resolves are its business.
 	for record in state.manifest.packages {
 		decision := state.decisions[record.name]
-		if record.linked != "" && (decision == nil || decision.action == .Linked) {
+		if record.linked != "" && decision != nil && decision.action == .Linked {
 			say(state.env, "%v %s %v %s", paint(state.env, ANSI_CYAN, "linked:"), record.name, paint(state.env, ANSI_DIM, "->"), record.linked)
 		}
 	}
