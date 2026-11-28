@@ -11,4 +11,6 @@ list_origin_names_why_the_project_has_a_package :: proc(t: ^testing.T) {
 	testing.expect_value(t, krs.list_origin("surf", {"surf", "async"}, {"saba"}), "imported")
 	testing.expect_value(t, krs.list_origin("aws", {"surf"}, {"saba", "surf"}), "via saba, surf")
 	testing.expect_value(t, krs.list_origin("old", {"surf"}, {}), "not used")
+	testing.expect_value(t, krs.list_origin("old", {"surf"}, {}, false), "unknown")
+	testing.expect_value(t, krs.list_origin("aws", {"surf"}, {"saba"}, false), "via saba")
 }

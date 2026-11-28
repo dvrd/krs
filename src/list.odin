@@ -9,7 +9,7 @@ import "core:strings"
 List_Row :: struct {
 	name:      string,
 	tag:       string, // as .krs/packages.json records it; "" when not recorded
-	origin:    string, // "imported", "via surf, aws", or "not used"
+	origin:    string, // "imported", "via surf, aws", "not used", or "unknown"
 	installed: string, // "installed", "linked -> …", "root has v1.2.0", "missing"
 	color:     string,
 	pinned:    bool,
@@ -71,18 +71,18 @@ command_list :: proc(env: ^Env, options: Options) -> bool {
 
 // The recorded packages, then the imports not recorded yet, sorted by name.
 list_rows :: proc(state: ^State, imports: []string) -> [dynamic]List_Row {
-	importers := list_importers(state)
+	importers, complete := list_importers(state)
 	rows: [dynamic]List_Row
 	for record in state.packages.packages {
 		row := List_Row{name = record.name, tag = record.tag, pinned = record.pinned}
-		row.origin = list_origin(record.name, imports, importers[record.name][:])
+		row.origin = list_origin(record.name, imports, importers[record.name][:], complete)
 		row.installed, row.color, row.attention = list_installed(state, record)
 		append(&rows, row)
 	}
 
 	for name in imports {
 		if packages_find(&state.packages, name) == nil {
-			append(&rows, List_Row{name = name, origin = "imported", installed = "not installed", color = ANSI_YELLOW, attention = true})
+			append(&rows, List_Row{name = name, origin = "imported", installed = list_unrecorded(state, name), color = ANSI_YELLOW, attention = true})
 		}
 	}
 
@@ -90,9 +90,24 @@ list_rows :: proc(state: ^State, imports: []string) -> [dynamic]List_Row {
 	return rows
 }
 
+// What the root holds for an import .krs/packages.json does not record yet;
+// `krs install` records it either way.
+list_unrecorded :: proc(state: ^State, name: string) -> string {
+	held := manifest_find(&state.manifest, name)
+	if held == nil || !path_present(path_join(state.shared, name)) {
+		return "not installed"
+	}
+
+	if held.linked != "" {
+		return fmt.tprintf("not recorded; linked -> %s", held.linked)
+	}
+	return fmt.tprintf("not recorded; %s has %s", "vendor/" if state.vendored else "root", held.tag)
+}
+
 // Why the project has `name`: its own import, the recorded packages that
-// import it, or neither.
-list_origin :: proc(name: string, imports, importers: []string) -> string {
+// import it, or neither. `complete` is false when a package could not be
+// scanned, so "not used" cannot be told.
+list_origin :: proc(name: string, imports, importers: []string, complete := true) -> string {
 	if slice.contains(imports, name) {
 		return "imported"
 	}
@@ -100,13 +115,14 @@ list_origin :: proc(name: string, imports, importers: []string) -> string {
 	if len(importers) > 0 {
 		return fmt.tprintf("via %s", strings.join(importers, ", ", context.temp_allocator))
 	}
-	return "not used"
+	return "not used" if complete else "unknown"
 }
 
 // For each recorded package, the other recorded packages whose installed
-// files import it.
-list_importers :: proc(state: ^State) -> map[string][dynamic]string {
-	importers := make(map[string][dynamic]string, context.temp_allocator)
+// files import it. Not `complete` when a package could not be scanned.
+list_importers :: proc(state: ^State) -> (importers: map[string][dynamic]string, complete: bool) {
+	importers = make(map[string][dynamic]string, context.temp_allocator)
+	complete = true
 	for record in state.packages.packages {
 		directory := path_join(state.shared, record.name)
 		if installed := manifest_find(&state.manifest, record.name); installed != nil && installed.linked != "" {
@@ -115,6 +131,7 @@ list_importers :: proc(state: ^State) -> map[string][dynamic]string {
 
 		imported, scanned := scan_directory_imports(directory, record.name, false)
 		if !scanned {
+			complete = false
 			continue
 		}
 
@@ -132,7 +149,7 @@ list_importers :: proc(state: ^State) -> map[string][dynamic]string {
 	for _, &list in importers {
 		slice.sort(list[:])
 	}
-	return importers
+	return importers, complete
 }
 
 // What the Odin root (or vendor/) holds for a recorded package.

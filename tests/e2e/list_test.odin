@@ -3,6 +3,7 @@ package e2e
 import "core:strings"
 import "core:testing"
 
+import krs "../../src"
 import "../fixtures"
 
 @(test)
@@ -37,4 +38,14 @@ ls_lists_the_projects_packages_and_versions :: proc(t: ^testing.T) {
 	fixtures.expect_contains(&fixture, changed.out, "run krs install")
 	testing.expect_value(t, fixtures.packages_text(&fixture), before)
 	testing.expect(t, !strings.contains(changed.err, "krs:"), changed.err)
+
+	// An import another project installed is held by the root, not missing.
+	fixtures.library_release(&fixture, "epsilon", "v0.5.0")
+	other := krs.path_join(fixture.base, "other")
+	fixtures.write_file(t, krs.path_join(other, "main.odin"), "package main\n\nimport \"shared:epsilon\"\n\nmain :: proc() {\n\t_ = epsilon\n}\n")
+	fixtures.expect_ok(&fixture, fixtures.run_in(&fixture, other, "", "install", "--yes"))
+	fixtures.project_imports(&fixture, "beta", "epsilon")
+	held := fixtures.run(&fixture, "", "ls")
+	fixtures.expect_ok(&fixture, held)
+	fixtures.expect_contains(&fixture, fixtures.squeeze(held.out), "epsilon imported not recorded; root has v0.5.0")
 }
