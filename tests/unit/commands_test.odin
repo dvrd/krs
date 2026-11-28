@@ -121,21 +121,23 @@ status_rows_flag_what_needs_attention :: proc(t: ^testing.T) {
 		name:      string,
 		label:     string,
 		attention: bool,
+		used:      bool,
 		notes:     string,
 	}
 	expected := []Expected {
-		{"alpha", "installed v0.1.0", true, "pin v0.0.9"},
-		{"beta", "altered v0.2.0", true, ""},
-		{"delta", strings.concatenate({"linked -> ", source}), false, "not imported here"},
-		{"epsilon", "unmanaged", false, ""},
-		{"gamma", "missing v0.3.0", true, "not imported here"},
-		{"zeta", "not installed", true, ""},
+		{"alpha", "installed v0.1.0", true, true, "pin v0.0.9"},
+		{"beta", "altered v0.2.0", true, true, ""},
+		{"delta", strings.concatenate({"linked -> ", source}), false, false, "not imported here"},
+		{"epsilon", "unmanaged", false, false, ""},
+		{"gamma", "missing v0.3.0", true, false, "not imported here"},
+		{"zeta", "not installed", true, true, ""},
 	}
 	for row, index in rows {
 		want := expected[index]
 		testing.expect_value(t, row.name, want.name)
 		testing.expect_value(t, row.label, want.label)
 		testing.expectf(t, row.attention == want.attention, "%s attention: %v", row.name, row.attention)
+		testing.expectf(t, row.used == want.used, "%s used: %v", row.name, row.used)
 		notes: [dynamic]string
 		for note in row.notes {
 			append(&notes, string(note))

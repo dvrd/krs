@@ -293,7 +293,7 @@ deleted_project_does_not_block_the_odin_root :: proc(t: ^testing.T) {
 	defer fixtures.fixture_destroy(&other)
 	other.root = fixture.root
 	other.home = fixture.home
-	fixtures.expect_ok(&other, fixtures.run(&other, "", "link", "ls"))
+	fixtures.expect_ok(&other, fixtures.run(&other, "", "status", "-g"))
 	testing.expect_value(t, fixtures.read_file(manifest), JOURNAL_BEFORE)
 	testing.expect(t, !os.exists(changes[0].directory))
 	fixtures.expect_contains(&other, fixtures.run(&other, "", "recover").out, "no interrupted transactions")

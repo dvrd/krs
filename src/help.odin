@@ -24,10 +24,22 @@ options:
   %[0]s--yes%[1]s          do not ask before writing
 `
 
-HELP_STATUS :: `%[0]susage:%[1]s krs status [--root=<path>]
+HELP_STATUS :: `%[0]susage:%[1]s krs status [-g] [--root=<path>]
 
-Lists what the Odin root holds for this project. Exits 1 when a package is
-altered, missing, broken or pinned differently.
+Checks that this project's packages are in place and lists those that are not:
+altered, missing, a broken link, or a release other than the one this project
+records. Exits 1 when one needs attention. %[0]skrs ls%[1]s lists them all.
+
+options:
+  %[0]s-g, --global%[1]s   list everything the Odin root holds, links included
+  %[0]s--root=<path>%[1]s  work on the shared/ of the Odin root at <path>
+`
+
+HELP_LS :: `%[0]susage:%[1]s krs ls [--root=<path>]
+
+Lists this project's packages: the version .krs/packages.json records, why the
+project has it (imported here, or via the packages that import it), and what
+the Odin root holds for it. Imports not recorded yet are listed too.
 
 options:
   %[0]s--root=<path>%[1]s  work on the shared/ of the Odin root at <path>
@@ -84,10 +96,9 @@ repository.
 `
 
 HELP_LINK :: `%[0]susage:%[1]s krs link <package> [--root=<path>] [--yes]
-       krs link ls [--root=<path>]
 
-Uses a checkout's live src/ in place of the installed release. %[0]sls%[1]s lists
-the links and flags broken ones.
+Uses a checkout's live src/ in place of the installed release. %[0]skrs status -g%[1]s
+lists the links and flags broken ones.
 
 options:
   %[0]s--root=<path>%[1]s  work on the shared/ of the Odin root at <path>
@@ -155,7 +166,8 @@ options:
 @(rodata)
 COMMAND_HELP := [?]Command_Help {
 	{"install", "install the releases this project imports", HELP_INSTALL},
-	{"status", "list what the Odin root holds for this project", HELP_STATUS},
+	{"ls", "list this project's packages and their versions", HELP_LS},
+	{"status", "check that this project's packages are in place", HELP_STATUS},
 	{"update", "list newer releases; with -u, upgrade to them", HELP_UPDATE},
 	{"fetch", "refresh the GitHub releases of this project's dependencies", HELP_FETCH},
 	{"link", "use a checkout's live src/ in place of a release", HELP_LINK},
