@@ -19,7 +19,8 @@ and records them in .krs/packages.json.
 
 options:
   %[0]s--root=<path>%[1]s  work on the shared/ of the Odin root at <path>
-  %[0]s--frozen%[1]s       install exactly what .krs/packages.json says, or fail
+  %[0]s--frozen%[1]s       install exactly what .krs/packages.json says, or fail;
+                 never asks, and a dependency's own record does not move it
   %[0]s--repair%[1]s       reinstall packages whose installed files were changed
   %[0]s--yes%[1]s          do not ask before writing
 `

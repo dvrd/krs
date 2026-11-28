@@ -166,6 +166,49 @@ frozen_installs_exactly_what_is_recorded :: proc(t: ^testing.T) {
 }
 
 @(test)
+frozen_keeps_the_recorded_version_when_a_dependency_records_another :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixtures.fixture_make(t)
+	defer fixtures.fixture_destroy(&fixture)
+
+	fixtures.library_release(&fixture, "beta", "v0.4.0")
+	fixtures.library_release(&fixture, "beta", "v0.4.1")
+	fixtures.project_imports(&fixture, "beta")
+	fixtures.expect_ok(&fixture, fixtures.run(&fixture, "", "install", "--yes"))
+	fixtures.library_release(&fixture, "beta", "v0.4.2")
+	fixtures.library_release(&fixture, "beta", "v0.5.0")
+	fixtures.project_imports(&fixture, "alpha", "beta")
+
+	// alpha's own record names an older release, a newer compatible one,
+	// then a breaking one. The project records beta v0.4.1 throughout.
+	for wanted, index in ([]string{"v0.4.0", "v0.4.2", "v0.5.0"}) {
+		alpha_tag := fmt.aprintf("v1.0.%d", index)
+		fixtures.alpha_recording_beta(&fixture, alpha_tag, wanted)
+
+		// Record alpha while a pin holds beta, then leave beta unpinned.
+		fixtures.expect_ok(&fixture, fixtures.run(&fixture, "", "pin", "beta"))
+		if index == 0 {
+			fixtures.expect_ok(&fixture, fixtures.run(&fixture, "", "install", "--yes"))
+		} else {
+			fixtures.expect_ok(&fixture, fixtures.run(&fixture, "", "update", "-u", "--yes", fmt.aprintf("alpha@%s", alpha_tag)))
+		}
+		fixtures.expect_ok(&fixture, fixtures.run(&fixture, "", "unpin", "beta"))
+		recorded := fixtures.packages_text(&fixture)
+		testing.expect(t, !strings.contains(recorded, "pinned"), recorded)
+
+		// A fresh Odin root, no terminal, no --yes.
+		other := krs.path_join(fixture.base, fmt.aprintf("frozen-root-%d", index))
+		os.make_directory_all(other)
+		result := fixtures.run(&fixture, "", "install", "--frozen", fmt.aprintf("--root=%s", other))
+		fixtures.expect_ok(&fixture, result)
+		fixtures.expect_contains(&fixture, result.out, fmt.aprintf("alpha %s recorded beta %s; --frozen keeps v0.4.1 from .krs/packages.json", alpha_tag, wanted))
+		fixtures.expect_contains(&fixture, fixtures.read_file(krs.path_join(other, "shared/beta/beta.odin")), "v0.4.1")
+		fixtures.expect_contains(&fixture, fixtures.read_file(krs.path_join(other, "shared/alpha/alpha.odin")), alpha_tag)
+		testing.expect_value(t, fixtures.packages_text(&fixture), recorded)
+	}
+}
+
+@(test)
 recorded_hash_mismatch_is_refused :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	fixture := fixtures.fixture_make(t)
@@ -737,7 +780,8 @@ breaking_difference_is_the_users_choice :: proc(t: ^testing.T) {
 
 	// Nobody to ask: stop with a report and change nothing.
 	fixtures.expect_failure(&fixture, fixtures.run(&fixture, "", "install", "--yes"), "needs a decision between v0.4.0 and v0.5.0")
-	fixtures.expect_failure(&fixture, fixtures.run(&fixture, "", "install", "--frozen"), "needs a decision between v0.4.0 and v0.5.0")
+	// --frozen holds beta; alpha is not recorded, so it still refuses.
+	fixtures.expect_failure(&fixture, fixtures.run(&fixture, "", "install", "--frozen"), "packages.json would change")
 	fixtures.expect_release(&fixture, "beta", "v0.4.0")
 	testing.expect(t, !os.exists(krs.path_join(fixture.shared, "alpha")))
 	testing.expect_value(t, fixtures.packages_text(&fixture), recorded)
