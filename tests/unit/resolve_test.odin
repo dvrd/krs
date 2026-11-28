@@ -231,3 +231,16 @@ plan_drain_fails_for_an_import_with_no_repository :: proc(t: ^testing.T) {
 	testing.expect(t, !krs.plan_drain(state))
 	testing.expect(t, strings.contains(strings.to_string(planning.err), "no repository for \"nowhere\""), strings.to_string(planning.err))
 }
+
+@(test)
+frozen_root_conflict_allows_only_a_newer_compatible_release :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	testing.expect(t, !krs.frozen_root_conflict("", "v0.4.1"))
+	testing.expect(t, !krs.frozen_root_conflict("v0.4.1", "v0.4.1"))
+	testing.expect(t, !krs.frozen_root_conflict("v0.4.0", "v0.4.1"))
+	testing.expect(t, !krs.frozen_root_conflict("v1.2.0", "v1.3.0"))
+	testing.expect(t, krs.frozen_root_conflict("v0.4.2", "v0.4.1"))
+	testing.expect(t, krs.frozen_root_conflict("v0.5.0", "v0.4.1"))
+	testing.expect(t, krs.frozen_root_conflict("v0.4.2", "v0.5.0"))
+	testing.expect(t, krs.frozen_root_conflict("v1.9.0", "v2.0.0"))
+}
