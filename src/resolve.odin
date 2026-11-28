@@ -432,6 +432,27 @@ enqueue_dependencies :: proc(state: ^State, decision: ^Decision, recorded: bool,
 	return true
 }
 
+// Under --frozen the Odin root moves only to a newer compatible release:
+// krs never lowers the version other projects on the root may be using, and
+// never crosses a breaking version there without asking.
+frozen_root_conflict :: proc(installed, recorded: string) -> bool {
+	if installed == "" || installed == recorded {
+		return false
+	}
+
+	installed_version, installed_ok := parse_tag(installed)
+	recorded_version, recorded_ok := parse_tag(recorded)
+	if !installed_ok || !recorded_ok {
+		return false
+	}
+
+	if version_compare(installed_version, recorded_version) == .Higher {
+		return true
+	}
+
+	return version_compatibility(installed_version, recorded_version) == .Breaking
+}
+
 plan_request :: proc(state: ^State, request: Request) -> bool {
 	if !is_package_name(request.name) {
 		return fail(state.env, "\"%s\" (imported by %s) is not a usable package name", request.name, request.by)
@@ -451,6 +472,11 @@ plan_request :: proc(state: ^State, request: Request) -> bool {
 			if pin.pinned && decision.installed_tag != "" && decision.installed_tag != pin.tag {
 				decision.failed = true
 				return fail(state.env, "%s is pinned at %s but %s holds %s; run %s, or %s", pin.name, pin.tag, state.shared, decision.installed_tag, "krs vendor", fmt.tprintf("krs unpin %s", pin.name))
+			}
+
+			if state.options.frozen && !state.vendored && frozen_root_conflict(decision.installed_tag, pin.tag) {
+				decision.failed = true
+				return fail(state.env, "--frozen: %s is recorded at %s but %s holds %s, which krs does not replace without asking; run %s to give this project its own copy, or %s in a terminal", pin.name, pin.tag, state.shared, decision.installed_tag, "krs vendor", "krs install")
 			}
 
 			own := Request{name = pin.name, tag = pin.tag, commit = pin.commit, source = pin.source, by = "this project", source_trusted = true}

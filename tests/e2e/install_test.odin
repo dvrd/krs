@@ -209,6 +209,58 @@ frozen_keeps_the_recorded_version_when_a_dependency_records_another :: proc(t: ^
 }
 
 @(test)
+frozen_never_lowers_or_breaks_the_odin_root :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	fixture := fixtures.fixture_make(t)
+	defer fixtures.fixture_destroy(&fixture)
+
+	packages := krs.path_join(fixture.project, krs.PACKAGES_PATH)
+	fixtures.library_release(&fixture, "beta", "v0.4.1")
+	fixtures.project_imports(&fixture, "beta")
+	fixtures.expect_ok(&fixture, fixtures.run(&fixture, "", "install", "--yes"))
+	lock_old := fixtures.packages_text(&fixture)
+
+	// A second root is at v0.4.1; the first moves on to v0.4.2.
+	other := krs.path_join(fixture.base, "other-root")
+	other_root := fmt.aprintf("--root=%s", other)
+	other_beta := krs.path_join(other, "shared/beta/beta.odin")
+	os.make_directory_all(other)
+	fixtures.expect_ok(&fixture, fixtures.run(&fixture, "", "install", "--frozen", other_root))
+	fixtures.library_release(&fixture, "beta", "v0.4.2")
+	fixtures.library_release(&fixture, "beta", "v0.5.0")
+	fixtures.expect_ok(&fixture, fixtures.run(&fixture, "", "update", "-u", "--yes", "beta@v0.4.2"))
+	lock_mid := fixtures.packages_text(&fixture)
+
+	// The root holds a newer release than the one recorded: left alone.
+	fixtures.write_file(t, packages, lock_old)
+	lowered := fixtures.run(&fixture, "", "install", "--frozen")
+	fixtures.expect_failure(&fixture, lowered, "--frozen: beta is recorded at v0.4.1 but")
+	fixtures.expect_contains(&fixture, lowered.err, "holds v0.4.2")
+	fixtures.expect_contains(&fixture, lowered.err, "krs vendor")
+	fixtures.expect_release(&fixture, "beta", "v0.4.2")
+	testing.expect_value(t, fixtures.packages_text(&fixture), lock_old)
+
+	// A newer compatible record moves the root without asking.
+	fixtures.write_file(t, packages, lock_mid)
+	fixtures.expect_ok(&fixture, fixtures.run(&fixture, "", "install", "--frozen", other_root))
+	fixtures.expect_contains(&fixture, fixtures.read_file(other_beta), "v0.4.2")
+
+	// A breaking one does not.
+	fixtures.expect_ok(&fixture, fixtures.run(&fixture, "", "update", "-u", "--yes", "beta@v0.5.0"))
+	breaking := fixtures.run(&fixture, "", "install", "--frozen", other_root)
+	fixtures.expect_failure(&fixture, breaking, "--frozen: beta is recorded at v0.5.0 but")
+	fixtures.expect_contains(&fixture, fixtures.read_file(other_beta), "v0.4.2")
+
+	// vendor/ gives the project the recorded release; the root keeps its own.
+	fixtures.write_file(t, packages, lock_old)
+	fixtures.expect_ok(&fixture, fixtures.run(&fixture, "", "vendor", "--yes"))
+	fixtures.expect_contains(&fixture, fixtures.read_file(krs.path_join(fixture.project, "vendor/beta/beta.odin")), "v0.4.1")
+	fixtures.expect_ok(&fixture, fixtures.run(&fixture, "", "install", "--frozen"))
+	fixtures.expect_release(&fixture, "beta", "v0.5.0")
+	testing.expect_value(t, fixtures.packages_text(&fixture), lock_old)
+}
+
+@(test)
 recorded_hash_mismatch_is_refused :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	fixture := fixtures.fixture_make(t)
