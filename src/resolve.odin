@@ -269,6 +269,11 @@ decision_apply :: proc(state: ^State, decision: ^Decision, request: Request) -> 
 	}
 
 	if decision.forced {
+		if state.options.frozen {
+			note(state.env, "%s recorded %s %s; --frozen keeps %s from %s", request.by, decision.name, request.tag, decision.tag, PACKAGES_PATH)
+			return true
+		}
+
 		note(state.env, "%s recorded %s %s; %s was asked for explicitly", request.by, decision.name, request.tag, decision.tag)
 		return true
 	}
@@ -454,8 +459,9 @@ plan_request :: proc(state: ^State, request: Request) -> bool {
 				return false
 			}
 
-			// A pinned package keeps the project's tag; dependency requests only note it.
-			if pin.pinned {
+			// A pinned package keeps the project's tag, and under --frozen every
+			// recorded package does; dependency requests only note it.
+			if pin.pinned || state.options.frozen {
 				decision.forced = true
 			}
 		}
